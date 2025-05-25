@@ -1,0 +1,54 @@
+{
+  "short_name": "Optical Store",
+  "name": "Optical Store Management",
+  "icons": [
+    {
+      "src": "https://i.pinimg.com/736x/03/b6/9a/03b69aa6e802d9958f2ac15df2794a4d.jpg",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "https://i.pinimg.com/736x/03/b6/9a/03b69aa6e802d9958f2ac15df2794a4d.jpg",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any"
+    },
+    {
+      "src": "https://i.pinimg.com/736x/03/b6/9a/03b69aa6e802d9958f2ac15df2794a4d.jpg",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any"
+    },
+    {
+      "src": "https://i.pinimg.com/736x/03/b6/9a/03b69aa6e802d9958f2ac15df2794a4d.jpg",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "maskable"
+    },
+    {
+      "src": "https://i.pinimg.com/736x/03/b6/9a/03b69aa6e802d9958f2ac15df2794a4d.jpg",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "maskable"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#000000",
+  "background_color": "#ffffff",
+  "orientation": "landscape",
+  "categories": ["business", "productivity"],
+  "shortcuts": [
+    {
+      "name": "Dashboard",
+      "url": "/dashboard",
+      "icons": [
+        {
+          "src": "https://i.pinimg.com/736x/03/b6/9a/03b69aa6e802d9958f2ac15df2794a4d.jpg",
+          "sizes": "192x192"
+        }
+      ]
+    }
+  ]
+}
