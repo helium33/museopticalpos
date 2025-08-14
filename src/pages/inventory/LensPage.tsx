@@ -58,6 +58,9 @@ const LensPage: React.FC = () => {
   // ADDED: Selling state to prevent concurrent operations and show loading states
   const [isSelling, setIsSelling] = useState(false);
 
+  // RESTOCK WARNING STATE - အသိပေးချက်များအတွက်
+  const [restockWarning, setRestockWarning] = useState<string | null>(null);
+
   // Enhanced search states
   const [searchExpanded, setSearchExpanded] = useState(false);
   const [searchFilters, setSearchFilters] = useState({
@@ -1178,6 +1181,172 @@ const LensPage: React.FC = () => {
     } catch (error) {
       console.error('Error deleting lens:', error);
       toast.error('Failed to delete lens');
+    }
+  };
+
+  // RESTOCK FUNCTIONS - ပြန်ဖြည့်တင်းရန်အတွက် functions များ
+  
+  // Handle restock lens button click - ပြန်ဖြည့်တင်းခလုတ်နှိပ်သည့်အခါ
+  const handleRestockLens = (lens: LensFormData) => {
+    setLensToRestock(lens);
+    setRestockData({
+      rightQty: 0.5, // စတင်တန်ဖိုး 0.5 ကနေ
+      leftQty: 0.5,  // စတင်တန်ဖိုး 0.5 ကနေ
+      totalQty: 0.5, // စတင်တန်ဖိုး 0.5 ကနေ
+      reason: '',
+      supplier: ''
+    });
+    setRestockWarning(null); // Warning ကို ရှင်းလင်းပါ
+    setRestockDialogOpen(true);
+  };
+
+  // Validate restock quantities - မှန်ကန်သော ပမာဏ စစ်ဆေးခြင်း
+  const validateRestockQuantities = (lens: LensFormData, rightQty: number, leftQty: number, totalQty: number): string | null => {
+    const isFlattopLens = (lens.type === 'Bifocal' && lens.bifocalType === 'Flattop') || 
+                          (lens.type === 'SMS' && lens.smsBifocalType === 'Flattop');
+
+    if (isFlattopLens) {
+      // Flattop lens များအတွက် Right/Left စစ်ဆေးခြင်း
+      if (rightQty > 0 && rightQty < 0.5) {
+        return "⚠️ မှတ်ချက်: Right eye ပမာဏသည် အနည်းဆုံး 0.5 ဖြစ်ရမည် (စတင်တန်ဖိုး: 0.5, 1, 1.5, 2, 2.5...)";
+      }
+      if (leftQty > 0 && leftQty < 0.5) {
+        return "⚠️ မှတ်ချက်: Left eye ပမာဏသည် အနည်းဆုံး 0.5 ဖြစ်ရမည် (စတင်တန်ဖိုး: 0.5, 1, 1.5, 2, 2.5...)";
+      }
+      
+      // Remaining quantity ကို စစ်ဆေးခြင်း - negative မဖြစ်အောင်
+      const currentRightQty = lens.rightQty || 0;
+      const currentLeftQty = lens.leftQty || 0;
+      const newRightQty = currentRightQty + rightQty;
+      const newLeftQty = currentLeftQty + leftQty;
+      
+      if (currentRightQty > 0 && newRightQty < 0) {
+        return "🚨 သတိပေးချက်: Right eye ကျန်ရှိသော ပမာဏ မည်းနေမည် (လက်ရှိ: " + currentRightQty + " + " + rightQty + " = " + newRightQty + ")";
+      }
+      if (currentLeftQty > 0 && newLeftQty < 0) {
+        return "🚨 သတိပေးချက်: Left eye ကျန်ရှိသော ပမာဏ မည်းနေမည် (လက်ရှိ: " + currentLeftQty + " + " + leftQty + " = " + newLeftQty + ")";
+      }
+    } else {
+      // အခြား lens များအတွက်
+      if (totalQty > 0 && totalQty < 0.5) {
+        return "⚠️ မှတ်ချက်: ပမာဏသည် အနည်းဆုံး 0.5 ဖြစ်ရမည် (စတင်တန်ဖိုး: 0.5, 1, 1.5, 2, 2.5...)";
+      }
+      
+      // Remaining quantity ကို စစ်ဆေးခြင်း - negative မဖြစ်အောင်
+      const currentTotalQty = lens.qty || 0;
+      const newTotalQty = currentTotalQty + totalQty;
+      if (currentTotalQty > 0 && newTotalQty < 0) {
+        return "🚨 သတိပေးချက်: စုစုပေါင်း ကျန်ရှိသော ပမာဏ မည်းနေမည် (လက်ရှိ: " + currentTotalQty + " + " + totalQty + " = " + newTotalQty + ")";
+      }
+    }
+
+    return null; // အားလုံး မှန်ကန်သည်
+  };
+
+  // Process restock - ပြန်ဖြည့်တင်းခြင်းကို လုပ်ဆောင်ခြင်း
+  const processRestock = async () => {
+    if (!lensToRestock?.id || isSubmitting) return;
+
+    // အခြေခံ validation
+    if (!restockData.reason) {
+      toast.error('ကြေးပုံ: ပြန်ဖြည့်တင်းရသော အကြောင်းရင်းကို ရွေးချယ်ပါ');
+      return;
+    }
+
+    const isFlattopLens = (lensToRestock.type === 'Bifocal' && lensToRestock.bifocalType === 'Flattop') || 
+                          (lensToRestock.type === 'SMS' && lensToRestock.smsBifocalType === 'Flattop');
+
+    let rightQty = 0;
+    let leftQty = 0; 
+    let totalQty = 0;
+
+    if (isFlattopLens) {
+      rightQty = restockData.rightQty || 0;
+      leftQty = restockData.leftQty || 0;
+      totalQty = rightQty + leftQty;
+
+      if (totalQty === 0) {
+        toast.error('ကြေးပုံ: Right eye သို့မဟုတ် Left eye ပမာဏကို ထည့်သွင်းပါ');
+        return;
+      }
+    } else {
+      totalQty = restockData.totalQty || 0;
+      if (totalQty === 0) {
+        toast.error('ကြေးပုံ: ပြန်ဖြည့်တင်းမည့် ပမာဏကို ထည့်သွင်းပါ');
+        return;
+      }
+    }
+
+    // Validation စစ်ဆေးခြင်း
+    const validationError = validateRestockQuantities(lensToRestock, rightQty, leftQty, totalQty);
+    if (validationError) {
+      // ဤနေရာတွင် Error မဟုတ်ပဲ Warning ပြသမည်
+      const isNegativeWarning = validationError.includes('မည်းနေမည်');
+      
+      if (isNegativeWarning) {
+        // Negative quantity အတွက် ပြင်းထန်သော warning
+        toast.error(validationError);
+        setRestockWarning(validationError);
+        return; // ရပ်တန့်ပါ
+      } else {
+        // အနည်းဆုံး အတွက် သာမန် warning
+        toast.warning(validationError);
+        setRestockWarning(validationError);
+      }
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      console.log('🚀 စတင်နေသည် restock operation:', {
+        lensId: lensToRestock.id,
+        lensCode: lensToRestock.code,
+        rightQty,
+        leftQty,
+        totalQty,
+        reason: restockData.reason
+      });
+
+      const lensRef = doc(db, 'lenses', lensToRestock.id);
+
+      if (isFlattopLens) {
+        // Flattop lens များအတွက် - Right/Left ခွဲထုတ်ခြင်း
+        const updateData: any = {
+          rightQty: increment(rightQty),
+          leftQty: increment(leftQty), 
+          qty: increment(totalQty),
+          restockRightQty: increment(rightQty),
+          restockLeftQty: increment(leftQty),
+          restockQty: increment(totalQty),
+          updatedAt: serverTimestamp()
+        };
+
+        await updateDoc(lensRef, updateData);
+
+        toast.success(`✅ အောင်မြင်စွာ ပြန်ဖြည့်တင်းပြီးပါပြီ! Right: +${rightQty}, Left: +${leftQty} (စုစုပေါင်း: +${totalQty})`);
+      } else {
+        // အခြား lens များအတွက် - တစ်ခုတည်း ပမာဏ
+        const updateData: any = {
+          qty: increment(totalQty),
+          restockQty: increment(totalQty),
+          updatedAt: serverTimestamp()
+        };
+
+        await updateDoc(lensRef, updateData);
+
+        toast.success(`✅ အောင်မြင်စွာ ပြန်ဖြည့်တင်းပြီးပါပြီ! စုစုပေါင်း: +${totalQty} လုံး`);
+      }
+
+      // Dialog ကို ပိတ်ခြင်း
+      setRestockDialogOpen(false);
+      setLensToRestock(null);
+      setRestockWarning(null);
+
+    } catch (error) {
+      console.error('❌ Restock လုပ်ဆောင်နေစဉ် ကြေးပုံ:', error);
+      toast.error('ပြန်ဖြည့်တင်းခြင်း မအောင်မြင်ပါ။ ကျေးဇူးပြုပြီး ထပ်မံကြိုးစားကြည့်ပါ။');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -2610,51 +2779,139 @@ const LensPage: React.FC = () => {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Right Eye Restock Quantity
+                      Right Eye Restock Quantity (ညာမျက်လုံး ပြန်ဖြည့်တင်း ပမာဏ)
                     </label>
                     <Input
                       type="number"
-                      min="0"
+                      min="0.5"
+                      step="0.5"
                       value={restockData.rightQty}
-                      onChange={(e) => setRestockData({...restockData, rightQty: parseInt(e.target.value) || 0})}
-                      placeholder="Enter right qty to add..."
+                      onChange={(e) => setRestockData({...restockData, rightQty: parseFloat(e.target.value) || 0})}
+                      placeholder="စတင်တန်ဖိုး: 0.5, 1, 1.5, 2, 2.5..."
                       className="w-full"
                     />
+                    {/* Quick selection buttons for Right eye */}
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      <span className="text-xs text-gray-600 dark:text-gray-400 mr-2">မြန်ရွေး:</span>
+                      {[0.5, 1, 1.5, 2, 2.5].map((qty) => (
+                        <button
+                          key={`right-${qty}`}
+                          type="button"
+                          onClick={() => setRestockData({...restockData, rightQty: qty})}
+                          className={`px-2 py-1 text-xs rounded border transition-colors ${
+                            restockData.rightQty === qty 
+                              ? 'bg-blue-500 text-white border-blue-500' 
+                              : 'bg-gray-100 text-gray-700 border-gray-300 hover:bg-blue-100 hover:border-blue-400 dark:bg-gray-700 dark:text-gray-300 dark:border-gray-600'
+                          }`}
+                        >
+                          {qty}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Left Eye Restock Quantity
+                      Left Eye Restock Quantity (ဘယ်မျက်လုံး ပြန်ဖြည့်တင်း ပမာဏ)
                     </label>
                     <Input
                       type="number"
-                      min="0"
+                      min="0.5"
+                      step="0.5"
                       value={restockData.leftQty}
-                      onChange={(e) => setRestockData({...restockData, leftQty: parseInt(e.target.value) || 0})}
-                      placeholder="Enter left qty to add..."
+                      onChange={(e) => setRestockData({...restockData, leftQty: parseFloat(e.target.value) || 0})}
+                      placeholder="စတင်တန်ဖိုး: 0.5, 1, 1.5, 2, 2.5..."
                       className="w-full"
                     />
+                    {/* Quick selection buttons for Left eye */}
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      <span className="text-xs text-gray-600 dark:text-gray-400 mr-2">မြန်ရွေး:</span>
+                      {[0.5, 1, 1.5, 2, 2.5].map((qty) => (
+                        <button
+                          key={`left-${qty}`}
+                          type="button"
+                          onClick={() => setRestockData({...restockData, leftQty: qty})}
+                          className={`px-2 py-1 text-xs rounded border transition-colors ${
+                            restockData.leftQty === qty 
+                              ? 'bg-green-500 text-white border-green-500' 
+                              : 'bg-gray-100 text-gray-700 border-gray-300 hover:bg-green-100 hover:border-green-400 dark:bg-gray-700 dark:text-gray-300 dark:border-gray-600'
+                          }`}
+                        >
+                          {qty}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
               ) : (
                 // All other lens types: Show total quantity input
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                    Total Restock Quantity
+                    Total Restock Quantity (စုစုပေါင်း ပြန်ဖြည့်တင်း ပမာဏ)
                   </label>
                   <Input
                     type="number"
-                    min="0"
+                    min="0.5"
+                    step="0.5"
                     value={restockData.totalQty}
-                    onChange={(e) => setRestockData({...restockData, totalQty: parseInt(e.target.value) || 0})}
-                    placeholder="Enter quantity to add..."
+                    onChange={(e) => setRestockData({...restockData, totalQty: parseFloat(e.target.value) || 0})}
+                    placeholder="စတင်တန်ဖိုး: 0.5, 1, 1.5, 2, 2.5..."
                     className="w-full"
                   />
+                  {/* Quick selection buttons for Total quantity */}
+                  <div className="flex flex-wrap gap-1 mt-2">
+                    <span className="text-xs text-gray-600 dark:text-gray-400 mr-2">မြန်ရွေး:</span>
+                    {[0.5, 1, 1.5, 2, 2.5].map((qty) => (
+                      <button
+                        key={`total-${qty}`}
+                        type="button"
+                        onClick={() => setRestockData({...restockData, totalQty: qty})}
+                        className={`px-2 py-1 text-xs rounded border transition-colors ${
+                          restockData.totalQty === qty 
+                            ? 'bg-purple-500 text-white border-purple-500' 
+                            : 'bg-gray-100 text-gray-700 border-gray-300 hover:bg-purple-100 hover:border-purple-400 dark:bg-gray-700 dark:text-gray-300 dark:border-gray-600'
+                        }`}
+                      >
+                        {qty}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Warning Display - သတိပေးချက်များ ပြသခြင်း */}
+              {restockWarning && (
+                <div className={`p-4 rounded-lg border ${
+                  restockWarning.includes('မည်းနေမည်') 
+                    ? 'bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-800' 
+                    : 'bg-yellow-50 border-yellow-200 dark:bg-yellow-900/20 dark:border-yellow-800'
+                }`}>
+                  <div className="flex items-start gap-2">
+                    <span className="text-lg">
+                      {restockWarning.includes('မည်းনেমเม') ? '🚨' : '⚠️'}
+                    </span>
+                    <div className="flex-1">
+                      <p className={`text-sm font-medium ${
+                        restockWarning.includes('မည်းနေမည်') 
+                          ? 'text-red-800 dark:text-red-200' 
+                          : 'text-yellow-800 dark:text-yellow-200'
+                      }`}>
+                        {restockWarning}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setRestockWarning(null)}
+                      className="text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
                 </div>
               )}
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                  Restock Reason
+                  Restock Reason (ပြန်ဖြည့်တင်း အကြောင်းရင်း)
                 </label>
                 <Select
                   value={restockData.reason}
