@@ -44,7 +44,7 @@ const Login: React.FC = () => {
       setIsSubmitting(true);
       setLoginError(null);
       await login(data.email, data.password);
-      setCurrentStore(data.store);
+      setCurrentStore(data.store as Store); // Ensure correct type
       navigate(from, { replace: true });
       toast.success('Login successful');
     } catch (error) {
@@ -78,13 +78,13 @@ const Login: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 px-4">
-      <div className="max-w-md w-full space-y-8 bg-white dark:bg-gray-800 p-8 rounded-lg shadow-md">
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 px-2 sm:px-4">
+      <div className="w-full max-w-md space-y-8 bg-white dark:bg-gray-800 p-4 sm:p-8 rounded-lg shadow-md">
         <div className="text-center">
           <div className="flex justify-center">
-            <Glasses size={48} className="text-blue-600 dark:text-blue-400" />
+            <Glasses size={40} className="text-blue-600 dark:text-blue-400" />
           </div>
-          <h2 className="mt-4 text-3xl font-bold text-gray-900 dark:text-white">
+          <h2 className="mt-4 text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">
             Optical Store
           </h2>
           <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">

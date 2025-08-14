@@ -9,7 +9,20 @@
 .dark {
   color-scheme: dark;
 }
+@media (max-width: 768px) {
+  html {
+    font-size: 14px;
+    .Container {
+      font-size: 14px;
+    }
+  }
+}
 
+@media (max-width: 480px) {
+  html {
+    font-size: 13px;
+  }
+}
 /* Ensure dark mode styles are applied */
 @layer base {
   :root {
@@ -33,6 +46,22 @@
   }
 
   body {
-    @apply bg-white text-gray-900 dark:bg-gray-900 dark:text-white;
+    @apply bg-white text-gray-500 dark:bg-gray-900 dark:text-white;
+  }
+}
+@layer utilities {
+  .animate-fadeIn {
+    animation: fadeIn 0.3s ease-in-out;
+  }
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+      transform: translateY(-10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 }

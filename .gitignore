@@ -22,3 +22,51 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# History and temporary files
+.history/
+temp_fix.txt
+*.backup
+*copy.ts
+*copy.tsx
+* copy.ts
+* copy.tsx
+
+# Documentation and test files (temporary)
+*_FIX*.md
+*_COMPLETE*.md
+*_SUMMARY*.md
+*_IMPLEMENTATION*.md
+*_FIXES*.md
+DEBUGGING_*.md
+DEBUG_*.md
+TROUBLESHOOT.md
+VERIFICATION_*.md
+INVENTORY_*.md
+RESPONSIVE_*.md
+RESTOCK_*.md
+VOC_*.md
+YANGON_*.md
+FRAME_*.md
+ERROR_*.md
+LENS_*.md
+IMPROVED_*.md
+FIXED_*.md
+COMPLETE_*.md
+FINAL_*.md
+FIREBASE_*.md
+plan_for_*.md
+test_*.js
+
+# Firebase files (will be configured separately)
+firebase.json
+firestore.indexes.json
+firestore.rules
+fistore.rules

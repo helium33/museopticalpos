@@ -39,6 +39,7 @@
   "background_color": "#ffffff",
   "orientation": "landscape",
   "categories": ["business", "productivity"],
+  
   "shortcuts": [
     {
       "name": "Dashboard",

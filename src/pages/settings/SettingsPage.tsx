@@ -17,6 +17,7 @@ import {
   Lock,
   Palette,
   MessageSquare,
+  Eye,
 } from 'lucide-react';
 
 interface SystemSettings {
@@ -32,8 +33,27 @@ interface SystemSettings {
   salesTarget: number;
   autoLogoutMinutes: number;
   twoFactorEnabled: boolean;
+  // Add new fields for sidebar control
+  sidebarVisibility: {
+    [key in UserRole]: {
+      dashboard: boolean;
+      expand: boolean;
+      dataEntry: boolean;
+      lens: boolean;
+      frame: boolean;
+      accessories: boolean;
+      contactLens: boolean;
+      voc: boolean;
+      deposit: boolean;
+      salesData: boolean;
+      staff: boolean;
+      suppliers: boolean;
+      settings: boolean;
+    }
+  };
 }
 
+type UserRole = 'owner' | 'admin' | 'staff' | 'readonly';
 const SettingsPage: React.FC = () => {
   const { isAdmin, user } = useAuth();
   const { theme, toggleTheme } = useTheme();
@@ -228,6 +248,44 @@ const SettingsPage: React.FC = () => {
         </div>
       )
     },
+      {
+    id: 'sidebar',
+    name: 'Sidebar Visibility',
+    icon: <Eye className="w-5 h-5" />,
+    content: (
+      <div className="space-y-4">
+        <h3 className="font-medium">Control which sidebar items are visible to different user roles</h3>
+        
+        {(['owner', 'admin', 'staff', 'readonly'] as UserRole[]).map(role => (
+          <div key={role} className="border rounded-lg p-4">
+            <h4 className="font-medium mb-2">{role.toUpperCase()} Role</h4>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+              {Object.entries(settings?.sidebarVisibility?.[role] || {}).map(([item, isVisible]) => (
+                <div key={item} className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    checked={isVisible as boolean}
+                    onChange={(e) => {
+                      const updatedVisibility = {
+                        ...settings?.sidebarVisibility,
+                        [role]: {
+                          ...settings?.sidebarVisibility?.[role],
+                          [item]: e.target.checked
+                        }
+                      };
+                      handleSubmit({ sidebarVisibility: updatedVisibility });
+                    }}
+                    className="rounded border-gray-300"
+                  />
+                  <span>{item.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase())}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    )
+  },
     {
       id: 'theme',
       name: 'Theme & Language',

@@ -12,10 +12,13 @@ import {
 import { auth, db } from '../lib/firebase';
 import { addDoc, collection, serverTimestamp, query, where, getDocs } from 'firebase/firestore';
 
+type UserRole = 'admin' | 'staff' | 'owner' | 'readonly';
+
 interface AuthContextType {
   user: User | null;
   loading: boolean;
   isAdmin: boolean;
+  userRole: UserRole;
   login: (email: string, password: string) => Promise<void>;
   loginWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
@@ -24,7 +27,6 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | null>(null);
 const googleProvider = new GoogleAuthProvider();
 
-// Configure Google Auth Provider
 googleProvider.setCustomParameters({
   prompt: 'select_account'
 });
@@ -33,19 +35,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [userRole, setUserRole] = useState<UserRole>('staff');
 
-  // List of authorized admin emails - Only these will have admin privileges
   const adminEmails = [
-    'kyawwin@gmail.com',
-    'helium33hl@gmail.com'
+    'kyawwinhtun564@gmail.com',
+    'wpy.muse@gmail.com',
+    'yannaing190792@gmail.com',
+
+      
+
   ];
 
-  // List of authorized staff emails - All staff can login
+  // List of emails authorized to login
   const authorizedEmails = [
     ...adminEmails,
-    'chittulay2001@gmail.com'
-    // Add other staff emails here if needed
+       'yannaing190791@gmail.com',
+
+
+    'winstore1717@gmail.com',
+    'chittulay2001@gmail.com',
+    'ygnoptical@gmail.com',
+    'pwintoptical@gmail.com',
+    'winvision1717@gmail.com',
   ];
+
+  // For showing in login fail error message
+  const allowedEmailListForDisplay = authorizedEmails.join(', ');
 
   const logUserActivity = async (currentUser: User, action: 'Login' | 'Logout', authorized: boolean = true) => {
     try {
@@ -57,15 +72,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const activityData = {
         action,
         details: authorized 
-          ? `User ${action.toLowerCase()}ed successfully`
-          : `Unauthorized ${action.toLowerCase()} attempt`,
+          ? action === 'Login'
+            ? 'User logged in successfully'
+            : 'User logged out successfully'
+          : action === 'Login'
+            ? 'Unauthorized login attempt'
+            : 'Unauthorized logout attempt',
         staffId: currentUser.uid,
         staffEmail: currentUser.email,
         timestamp: serverTimestamp(),
         authorized,
         deviceInfo: {
           userAgent: navigator.userAgent,
-          platform: navigator.platform,
           language: navigator.language,
           screenResolution: `${window.screen.width}x${window.screen.height}`,
           timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -79,12 +97,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
 
       await addDoc(collection(db, 'activityLogs'), activityData);
-      
+
       if (authorized) {
         await addDoc(collection(db, 'notifications'), {
           type: 'System',
           title: `User ${action}`,
-          message: `${currentUser.email} ${action.toLowerCase()}ed at ${new Date().toLocaleString()}`,
+          message: `${currentUser.email} ${action === 'Login' ? 'logged in' : 'logged out'} at ${new Date().toLocaleString()}`,
           isRead: false,
           createdAt: serverTimestamp(),
         });
@@ -95,18 +113,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const checkUserAuthorization = async (email: string): Promise<boolean> => {
-    // Check if email is in authorized list
-    if (authorizedEmails.includes(email)) {
-      return true;
-    }
+    if (authorizedEmails.includes(email)) return true;
 
-    // Check if email exists in staff collection
     const staffQuery = query(
       collection(db, 'staff'),
       where('email', '==', email),
       where('active', '==', true)
     );
-    
+
     const snapshot = await getDocs(staffQuery);
     return !snapshot.empty;
   };
@@ -115,7 +129,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser) {
         const isAuthorized = await checkUserAuthorization(currentUser.email || '');
-        
+
         if (!isAuthorized) {
           await logUserActivity(currentUser, 'Login', false);
           await firebaseSignOut(auth);
@@ -125,15 +139,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         await logUserActivity(currentUser, 'Login');
-        
-        // Check if user is an admin (only the specified admin emails)
-        setIsAdmin(adminEmails.includes(currentUser.email || ''));
+
+        let role: UserRole = 'staff';
+        if (currentUser.email === 'yannaing190791@gmail.com') {
+          role = 'owner';
+        } else if (adminEmails.includes(currentUser.email || '')) {
+          role = 'admin';
+        } else if (authorizedEmails.includes(currentUser.email || '')) {
+          const staffQuery = query(
+            collection(db, 'staff'),
+            where('email', '==', currentUser.email),
+            where('readOnly', '==', true)
+          );
+          const snapshot = await getDocs(staffQuery);
+          if (!snapshot.empty) {
+            role = 'readonly';
+          }
+        }
+
+        setIsAdmin(role === 'admin' || role === 'owner');
+        setUserRole(role);
         setUser(currentUser);
       } else {
         setUser(null);
         setIsAdmin(false);
+        setUserRole('staff');
       }
-      
+
       setLoading(false);
     });
 
@@ -141,15 +173,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const login = async (email: string, password: string) => {
-    await setPersistence(auth, browserLocalPersistence);
-    await signInWithEmailAndPassword(auth, email, password);
+    try {
+      await setPersistence(auth, browserLocalPersistence);
+      const result = await signInWithEmailAndPassword(auth, email, password);
+
+      if (!result.user) {
+        throw new Error('Login failed: No user returned.');
+      }
+
+      const isAuthorized = await checkUserAuthorization(result.user.email || '');
+
+      if (!isAuthorized) {
+        await logUserActivity(result.user, 'Login', false);
+        await firebaseSignOut(auth);
+        throw new Error('Unauthorized email. Please use your staff email address.');
+      }
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        throw new Error(error.message || 'Login failed');
+      } else {
+        throw new Error('Login failed');
+      }
+    }
   };
 
   const loginWithGoogle = async () => {
     await setPersistence(auth, browserLocalPersistence);
     const result = await signInWithPopup(auth, googleProvider);
     const isAuthorized = await checkUserAuthorization(result.user.email || '');
-    
+
     if (!isAuthorized) {
       await logUserActivity(result.user, 'Login', false);
       await firebaseSignOut(auth);
@@ -165,7 +217,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, isAdmin, login, loginWithGoogle, logout }}>
+    <AuthContext.Provider value={{ user, loading, isAdmin, userRole, login, loginWithGoogle, logout }}>
       {children}
     </AuthContext.Provider>
   );

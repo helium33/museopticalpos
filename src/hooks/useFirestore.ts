@@ -1,9 +1,10 @@
+import React from 'react';
 import useSWR from 'swr';
 import { collection, query, where, orderBy, getDocs, limit, startAfter, QueryConstraint } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { debounce } from '../lib/utils';
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 15;
 
 const fetcher = async (key: string, queryConstraints: QueryConstraint[]) => {
   const q = query(collection(db, key), ...queryConstraints);

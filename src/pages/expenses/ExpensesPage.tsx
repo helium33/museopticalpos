@@ -23,8 +23,10 @@ const ExpensesPage: React.FC = () => {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [expenseToDelete, setExpenseToDelete] = useState<ExpenseFormData | null>(null);
   
+  // Load all expenses for all users
   useEffect(() => {
     fetchExpenses();
+    // eslint-disable-next-line
   }, []);
   
   const fetchExpenses = async () => {
