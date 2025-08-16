@@ -1,59 +1,78 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { Toaster } from 'react-hot-toast';
-import Layout from './components/layout/Layout';
+import { PageLoader } from './components/common/FastLoader';
+import { PerformanceMonitor, useDebounce } from './utils/performanceUtils';
+
+// Critical components (loaded immediately)
 import Login from './pages/auth/Login';
 import ProtectedRoute from './components/auth/ProtectedRoute';
 import AdminRoute from './components/auth/AdminRoute';
-import Dashboard from './pages/Dashboard';
-import LensPage from './pages/inventory/LensPage';
-import FramePage from './pages/inventory/FramePage';
-import AccessoriesPage from './pages/inventory/AccessoriesPage';
-import ContactLensPage from './pages/inventory/ContactLensPage';
-import CustomerPage from './pages/customer/CustomerPage';
-import ExpensesPage from './pages/expenses/ExpensesPage';
-import SuppliersPage from './pages/suppliers/SuppliersPage';
-import StaffPage from './pages/staff/StaffPage';
-import HistoryPage from './pages/history/HistoryPage';
-import SettingsPage from './pages/settings/SettingsPage';
-import PaymentPage from './pages/payment/PaymentPage';
-import DepositsPage from './pages/deposits/DepositsPage';
-import VocPage from './pages/voc/VocPage';
-import SalesDataPage from './pages/SalesDataPage';
-import DataEntryPage from './pages/DataEntry/DataEntryPage';
-import TransfersPage from './pages/transfers/TransfersPage';
 import NotFound from './pages/NotFound';
 import NotAuthorized from './pages/NotAuthorize';
 import { ConnectionStatus } from './components/tables/ConnectionStatus';
-import TransactionsPage from './pages/Transcation/TranscationPage';
-import StaffDashboard from './pages/StaffDashboard';
-import YangonFramePage from './pages/yangon-office/YangonFramePage';
-import YangonAccessoriesPage from './pages/yangon-office/YangonAccessoriesPage';
-import YangonContentLensPage from './pages/yangon-office/YangonContentLensPage';
+
+// Lazy loaded components (loaded on demand)
+const Layout = React.lazy(() => import('./components/layout/Layout'));
+const Dashboard = React.lazy(() => import('./pages/Dashboard'));
+const LensPage = React.lazy(() => import('./pages/inventory/LensPage'));
+const FramePage = React.lazy(() => import('./pages/inventory/FramePage'));
+const AccessoriesPage = React.lazy(() => import('./pages/inventory/AccessoriesPage'));
+const ContactLensPage = React.lazy(() => import('./pages/inventory/ContactLensPage'));
+const CustomerPage = React.lazy(() => import('./pages/customer/CustomerPage'));
+const ExpensesPage = React.lazy(() => import('./pages/expenses/ExpensesPage'));
+const SuppliersPage = React.lazy(() => import('./pages/suppliers/SuppliersPage'));
+const StaffPage = React.lazy(() => import('./pages/staff/StaffPage'));
+const HistoryPage = React.lazy(() => import('./pages/history/HistoryPage'));
+const SettingsPage = React.lazy(() => import('./pages/settings/SettingsPage'));
+const PaymentPage = React.lazy(() => import('./pages/payment/PaymentPage'));
+const DepositsPage = React.lazy(() => import('./pages/deposits/DepositsPage'));
+const VocPage = React.lazy(() => import('./pages/voc/VocPage'));
+const SalesDataPage = React.lazy(() => import('./pages/SalesDataPage'));
+const DataEntryPage = React.lazy(() => import('./pages/DataEntry/DataEntryPage'));
+const TransfersPage = React.lazy(() => import('./pages/transfers/TransfersPage'));
+const TransactionsPage = React.lazy(() => import('./pages/Transcation/TranscationPage'));
+const StaffDashboard = React.lazy(() => import('./pages/StaffDashboard'));
+const YangonFramePage = React.lazy(() => import('./pages/yangon-office/YangonFramePage'));
+const YangonAccessoriesPage = React.lazy(() => import('./pages/yangon-office/YangonAccessoriesPage'));
+const YangonContentLensPage = React.lazy(() => import('./pages/yangon-office/YangonContentLensPage'));
 
 function App() {
+  // Performance monitoring
+  useEffect(() => {
+    PerformanceMonitor.start('app-init');
+    return () => {
+      PerformanceMonitor.end('app-init');
+    };
+  }, []);
+
   const [isMobile, setIsMobile] = useState(window.innerWidth < 640);
   const [isTablet, setIsTablet] = useState(window.innerWidth >= 640 && window.innerWidth < 1024);
 
+  // Dark mode detection
   useEffect(() => {
     if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
       document.documentElement.classList.add('dark');
     }
   }, []);
 
+  // Debounced screen size check for better performance
+  const debouncedScreenSizeCheck = useDebounce(() => {
+    const width = window.innerWidth;
+    setIsMobile(width < 640);
+    setIsTablet(width >= 640 && width < 1024);
+  }, 150);
+
   useEffect(() => {
-    const checkScreenSize = () => {
-      setIsMobile(window.innerWidth < 640);
-      setIsTablet(window.innerWidth >= 640 && window.innerWidth < 1024);
-    };
-
-    checkScreenSize();
-    window.addEventListener('resize', checkScreenSize);
-
-    return () => window.removeEventListener('resize', checkScreenSize);
-  }, []);
+    // Initial check
+    debouncedScreenSizeCheck();
+    
+    // Add resize listener
+    window.addEventListener('resize', debouncedScreenSizeCheck);
+    return () => window.removeEventListener('resize', debouncedScreenSizeCheck);
+  }, [debouncedScreenSizeCheck]);
 
   const [currentView, setCurrentView] = useState<'voc' | 'lens'>('voc');
   const [refreshTrigger, setRefreshTrigger] = useState(0);

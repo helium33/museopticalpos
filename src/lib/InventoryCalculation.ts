@@ -1,78 +1,89 @@
-import { VocItem } from '../type/voc';
-import { ILens, IVoc, LensStock, VOC } from "../type/Voc";
-import {
-  collection,
-  getDocs,
-  query,
-  where,
-  updateDoc,
-  doc,
-} from "firebase/firestore";
-import { db } from "./firebase";
+import { collection, getDocs, query, where, doc, updateDoc, serverTimestamp, addDoc } from 'firebase/firestore';
+import { db } from './firebase';
+import { VocItem } from '../type/Vocerror';
+
+interface ILens {
+  name: string;
+  category: string;
+  type: string;
+  power: {
+    sph: string;
+    cyl: string;
+    axis: string;
+    add: string;
+  };
+}
+
+interface LensStock {
+  name: string;
+  category: string;
+  type: string;
+  totalQty: number;
+  soldQty: number;
+  remainingQty: number;
+}
 
 /**
- * QUANTITY CALCULATIONS
+ * Calculate sold quantity from VOC item
  */
-
-/**
- * Calculate the sold quantity for an item
- * Sold quantity = Total quantity - Error quantity
- */
-export function calculateSoldQuantity(item: VocItem): number {
-  // If explicit soldQty is provided, use it
+export const calculateSoldQuantity = (item: VocItem): number => {
+  if (item.soldQuantity !== undefined) {
+    return item.soldQuantity;
+  }
+  
   if (item.soldQty !== undefined) {
     return item.soldQty;
   }
-
-  // If no error, all quantity is sold
-  if (!item.hasError) {
+  
+  // If quantity is a whole number and no error, assume all sold
+  if (item.quantity % 1 === 0 && !item.hasError && !item.errorQuantity && !item.errorQty) {
     return item.quantity;
   }
-
-  // Get error quantity (prioritize errorQuantity over errorQty)
-  const errorQty = item.errorQuantity !== undefined ? item.errorQuantity : (item.errorQty || 0);
   
-  // Calculate sold quantity as total minus error
-  return Math.max(0, item.quantity - errorQty);
-}
-
+  // If quantity has decimals, calculate based on error status
+  if (item.hasError || item.errorQuantity || item.errorQty) {
+    const errorQuantity = calculateErrorQuantity(item);
+    return Math.max(0, item.quantity - errorQuantity);
+  }
+  
+  // Default: assume all quantity is sold
+  return item.quantity;
+};
 
 /**
- * Calculate the error quantity for an item with enhanced logic
+ * Calculate error quantity from VOC item
  */
-export function calculateErrorQuantity(item: VocItem): number {
-  // If no error flag, return 0
-  if (!item.hasError) {
-    return 0;
-  }
-
-  // Prioritize errorQuantity over errorQty
+export const calculateErrorQuantity = (item: VocItem): number => {
+  // Check explicit error quantity fields first
   if (item.errorQuantity !== undefined) {
-    return Math.min(item.errorQuantity, item.quantity);
+    return item.errorQuantity;
   }
   
   if (item.errorQty !== undefined) {
-    return Math.min(item.errorQty, item.quantity);
+    return item.errorQty;
   }
-
-  // If hasError is true but no explicit quantity, return 0 (user needs to set quantity)
+  
+  // If item is marked as having error but no explicit quantity
+  if (item.hasError && (item.errorQuantity === undefined && item.errorQty === undefined)) {
+    // For decimal quantities, assume the decimal part is error
+    if (item.quantity % 1 !== 0) {
+      return item.quantity % 1;
+    }
+    // For whole numbers with error flag, assume small error quantity
+    return 0.5;
+  }
+  
   return 0;
-}
+};
 
 /**
- * VOC AMOUNT CALCULATIONS WITH ERROR EXCLUSION
+ * PRICING CALCULATIONS - Updated to handle error quantities properly
  */
 
 /**
- * Calculate total VOC amount with comprehensive pricing logic
- * Handles:
- * - Regular items (full price for sold quantity only)
- * - Error items (completely excluded from pricing)
- * - FOC (Free of Charge) items
- * - Item-level discounts
- * - Global discounts
+ * Calculate pricing breakdown for VOC items with proper error quantity handling
  */
-export function calculateVocAmount(items: VocItem[], globalDiscount: number = 0): {
+export function calculateVOCPricing(items: VocItem[], globalDiscount: number = 0): {
   totalAmount: number;
   originalAmount: number;
   subtotal: number;
@@ -189,193 +200,109 @@ export const calculateInventoryDeduction = (item: VocItem): {
 };
 
 /**
- * Enhanced helper function to return items to inventory when VOC is returned or deleted
- * This function properly handles both sold and error quantities separately
+ * Helper function to return items to inventory (used for calculations)
  */
 export const returnItemsToInventory = (items: VocItem[]): {
-  soldItemsToReturn: VocItem[];
-  errorItemsToReturn: VocItem[];
   totalSoldQuantity: number;
   totalErrorQuantity: number;
-  inventoryUpdates: Array<{
-    item: VocItem;
-    soldQuantityToReturn: number;
-    errorQuantityToReturn: number;
-    totalQuantityToReturn: number;
-  }>;
+  totalQuantity: number;
+  itemsReturned: number;
 } => {
-  const soldItemsToReturn: VocItem[] = [];
-  const errorItemsToReturn: VocItem[] = [];
-  const inventoryUpdates: Array<{
-    item: VocItem;
-    soldQuantityToReturn: number;
-    errorQuantityToReturn: number;
-    totalQuantityToReturn: number;
-  }> = [];
   let totalSoldQuantity = 0;
   let totalErrorQuantity = 0;
+  let itemsReturned = 0;
 
   items.forEach(item => {
     const soldQty = calculateSoldQuantity(item);
     const errorQty = calculateErrorQuantity(item);
-    const totalQtyToReturn = soldQty + errorQty;
-
-    console.log(`Processing item: ${item.name}`);
-    console.log(`- Total quantity: ${item.quantity}`);
-    console.log(`- Sold quantity to return: ${soldQty}`);
-    console.log(`- Error quantity to return: ${errorQty}`);
-    console.log(`- Total to return: ${totalQtyToReturn}`);
-    // Track inventory updates for each item
-    if (totalQtyToReturn > 0) {
-      inventoryUpdates.push({
-        item,
-        soldQuantityToReturn: soldQty,
-        errorQuantityToReturn: errorQty,
-        totalQuantityToReturn: totalQtyToReturn
-      });
-    }
-
-    // Return sold items to inventory
-    if (soldQty > 0) {
-      const soldItem: VocItem = {
-        ...item,
-        quantity: soldQty,
-        hasError: false,
-        errorQuantity: 0,
-        errorCategory: undefined,
-        errorDescription: undefined,
-        soldQty: undefined, // Clear sold quantity when returning
-        errorQty: undefined // Clear error quantity when returning
-      };
-
-      // For bifocal lenses, adjust right/left quantities proportionally
-      if (item.type === 'Lens' && item.details?.rightQty !== undefined && item.details?.leftQty !== undefined) {
-        const totalOriginal = (item.details.rightQty || 0) + (item.details.leftQty || 0);
-        if (totalOriginal > 0) {
-          const ratio = soldQty / totalOriginal;
-          soldItem.details = {
-            ...item.details,
-            rightQty: Math.floor((item.details.rightQty || 0) * ratio),
-            leftQty: Math.floor((item.details.leftQty || 0) * ratio)
-          };
-        }
-      }
-
-      soldItemsToReturn.push(soldItem);
-      totalSoldQuantity += soldQty;
-    }
-
-    // Return error items to inventory
-    if (errorQty > 0) {
-      const errorItem: VocItem = {
-        ...item,
-        quantity: errorQty,
-        hasError: false, // Reset error status when returning to inventory
-        errorQuantity: 0, // Reset error quantity
-        errorCategory: undefined, // Clear error category
-        errorDescription: undefined, // Clear error description
-        soldQty: undefined, // Clear sold quantity when returning
-        errorQty: undefined // Clear error quantity when returning
-      };
-
-      // For bifocal lenses, adjust right/left quantities proportionally
-      if (item.type === 'Lens' && item.details?.rightQty !== undefined && item.details?.leftQty !== undefined) {
-        const totalOriginal = (item.details.rightQty || 0) + (item.details.leftQty || 0);
-        if (totalOriginal > 0) {
-          const ratio = errorQty / totalOriginal;
-          errorItem.details = {
-            ...item.details,
-            rightQty: Math.floor((item.details.rightQty || 0) * ratio),
-            leftQty: Math.floor((item.details.leftQty || 0) * ratio)
-          };
-        }
-      }
-
-      errorItemsToReturn.push(errorItem);
-      totalErrorQuantity += errorQty;
-    }
+    
+    totalSoldQuantity += soldQty;
+    totalErrorQuantity += errorQty;
+    itemsReturned++;
   });
 
-  console.log(`Total sold quantity to return: ${totalSoldQuantity}`);
-  console.log(`Total error quantity to return: ${totalErrorQuantity}`);
-  console.log(`Total inventory updates: ${inventoryUpdates.length}`);
   return {
-    soldItemsToReturn,
-    errorItemsToReturn,
     totalSoldQuantity,
     totalErrorQuantity,
-    inventoryUpdates
+    totalQuantity: totalSoldQuantity + totalErrorQuantity,
+    itemsReturned
   };
 };
 
 /**
- * Enhanced function to handle VOC deletion and inventory return
+ * Validation Functions
  */
-export const returnInventoryForVoc = async (
-  vocItems: VocItem[],
-  updateInventoryCallback: (updates: Array<{
-    item: VocItem;
-    soldQuantityToReturn: number;
-    errorQuantityToReturn: number;
-    totalQuantityToReturn: number;
-  }>) => Promise<void>
-): Promise<{
-  success: boolean;
-  message: string;
-  returnedItems: {
-    soldItems: VocItem[];
-    errorItems: VocItem[];
-    totalSoldReturned: number;
-    totalErrorReturned: number;
-  };
-}> => {
-  try {
-    const returnData = returnItemsToInventory(vocItems);
-    
-    // Update inventory with both sold and error quantities
-    await updateInventoryCallback(returnData.inventoryUpdates);
-    
-    return {
-      success: true,
-      message: `Successfully returned ${returnData.totalSoldQuantity} sold items and ${returnData.totalErrorQuantity} error items to inventory`,
-      returnedItems: {
-        soldItems: returnData.soldItemsToReturn,
-        errorItems: returnData.errorItemsToReturn,
-        totalSoldReturned: returnData.totalSoldQuantity,
-        totalErrorReturned: returnData.totalErrorQuantity
-      }
-    };
-  } catch (error) {
-    console.error('Error returning items to inventory:', error);
-    return {
-      success: false,
-      message: `Failed to return items to inventory: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      returnedItems: {
-        soldItems: [],
-        errorItems: [],
-        totalSoldReturned: 0,
-        totalErrorReturned: 0
-      }
-    };
-  }
-};
 
 /**
- * Validate error quantities
+ * Validate VOC item quantities
  */
-export const validateErrorQuantity = (item: VocItem, errorQuantity: number): {
-  isValid: boolean;
-  message?: string;
-} => {
-  if (errorQuantity < 0) {
-    return { isValid: false, message: 'Error quantity cannot be negative' };
+export const validateVOCQuantities = (item: VocItem): { isValid: boolean; errors: string[] } => {
+  const errors: string[] = [];
+  
+  if (item.quantity <= 0) {
+    errors.push('Quantity must be greater than 0');
   }
   
-  if (errorQuantity > item.quantity) {
-    return { 
-      isValid: false, 
-      message: `Error quantity (${errorQuantity}) cannot exceed total quantity (${item.quantity})` 
-    };
+  const soldQty = calculateSoldQuantity(item);
+  const errorQty = calculateErrorQuantity(item);
+  
+  if (soldQty < 0) {
+    errors.push('Sold quantity cannot be negative');
+  }
+  
+  if (errorQty < 0) {
+    errors.push('Error quantity cannot be negative');
+  }
+  
+  if (soldQty + errorQty > item.quantity) {
+    errors.push('Sum of sold and error quantities cannot exceed total quantity');
+  }
+  
+  return {
+    isValid: errors.length === 0,
+    errors
+  };
+};
+
+/**
+ * Validate all items in a VOC
+ */
+export const validateAllVOCItems = (items: VocItem[]): { isValid: boolean; errors: string[] } => {
+  const allErrors: string[] = [];
+  
+  items.forEach((item, index) => {
+    const validation = validateVOCQuantities(item);
+    if (!validation.isValid) {
+      validation.errors.forEach(error => {
+        allErrors.push(`Item ${index + 1} (${item.name}): ${error}`);
+      });
+    }
+  });
+  
+  return { isValid: allErrors.length === 0, errors: allErrors };
+};
+
+/**
+ * General item validation function
+ */
+export const validateVOCItem = (item: VocItem): { isValid: boolean; message?: string } => {
+  if (!item.name || item.name.trim() === '') {
+    return { isValid: false, message: 'Item name is required' };
+  }
+  
+  if (!item.type || item.type.trim() === '') {
+    return { isValid: false, message: 'Item type is required' };
+  }
+  
+  if (item.quantity <= 0) {
+    return { isValid: false, message: 'Quantity must be greater than 0' };
+  }
+  
+  const soldQty = calculateSoldQuantity(item);
+  const errorQty = calculateErrorQuantity(item);
+  
+  if (soldQty + errorQty > item.quantity) {
+    return { isValid: false, message: 'Sold + Error quantities cannot exceed total quantity' };
   }
   
   return { isValid: true };
@@ -461,584 +388,493 @@ export const updateLensStockForVOC = async (lens: ILens) => {
 };
 
 /**
- * Enhanced function to return VOC items back to inventory - both sold and error quantities
- * This function ensures proper inventory restoration when VOCs are deleted
+ * Return VOC items to inventory - handles both regular quantities and flattop lens right/left quantities
  */
 export const returnVOCItemsToInventory = async (items: VocItem[]): Promise<{
   success: boolean;
   message: string;
   returnedItems: {
+    totalItems: number;
     soldItems: number;
     errorItems: number;
-    totalItems: number;
   };
 }> => {
+  console.log('🔄 Starting VOC items return to inventory:', items);
+  
   try {
-    console.log('Starting VOC items return to inventory...');
-    const returnData = returnItemsToInventory(items);
-    let updatedLenses = 0;
-    let updatedFrames = 0;
-    let updatedAccessories = 0;
-
-    // Process each item to return to inventory
+    let totalReturned = 0;
+    let soldReturned = 0;
+    let errorReturned = 0;
+    
     for (const item of items) {
+      console.log(`🔄 Processing item: ${item.name} (${item.type})`);
+      
+      // Calculate quantities to return
       const soldQty = calculateSoldQuantity(item);
       const errorQty = calculateErrorQuantity(item);
-      const totalReturnQty = soldQty + errorQty;
-
-      console.log(`Processing return for item: ${item.name}`);
-      console.log(`- Sold qty to return: ${soldQty}`);
-      console.log(`- Error qty to return: ${errorQty}`);
-      console.log(`- Total qty to return: ${totalReturnQty}`);
-      if (totalReturnQty === 0) continue;
-
+      const totalQty = soldQty + errorQty;
+      
+      console.log(`📊 Quantities - Total: ${totalQty}, Sold: ${soldQty}, Error: ${errorQty}`);
+      
+      if (totalQty === 0) {
+        console.log('⏭️ Skipping item with zero quantity');
+        continue;
+      }
+      
+      // Handle lens items (including flattop with right/left quantities)
       if (item.type === 'Lens') {
-        // Return lens to inventory
-        try {
-          const q = query(
-            collection(db, "lenses"),
-            where("name", "==", item.name),
-            where("category", "==", item.category || ""),
-            where("type", "==", item.type)
-          );
-
-          const querySnapshot = await getDocs(q);
-
-          if (!querySnapshot.empty) {
-            querySnapshot.forEach(async (lensDoc) => {
-              const lensData = lensDoc.data() as LensStock;
-              console.log(`Found lens in inventory: ${lensData.name}`);
-              console.log(`- Current sold qty: ${lensData.soldQty || 0}`);
-              console.log(`- Current error qty: ${lensData.errorQty || 0}`);
-              
-              const newSoldQty = Math.max(0, (lensData.soldQty || 0) - soldQty);
-              const newErrorQty = Math.max(0, (lensData.errorQty || 0) - errorQty);
-              const newRemainingQty = lensData.totalQty - newSoldQty;
-
-              console.log(`- New sold qty: ${newSoldQty}`);
-              console.log(`- New error qty: ${newErrorQty}`);
-              console.log(`- New remaining qty: ${newRemainingQty}`);
-              await updateDoc(doc(db, "lenses", lensDoc.id), {
-                soldQty: newSoldQty,
-                errorQty: newErrorQty,
-                remainingQty: newRemainingQty,
-                lastUpdated: new Date().toISOString(),
-              });
-              updatedLenses++;
-              console.log(`Successfully updated lens inventory: ${lensData.name}`);
-            });
-          }
-        } catch (error) {
-          console.error(`Error returning lens ${item.name} to inventory:`, error);
-        }
-      } else if (item.type === 'Frame') {
-        // Return frame to inventory
-        try {
-          const q = query(
-            collection(db, "frames"),
-            where("name", "==", item.name),
-            where("category", "==", item.category || "")
-          );
-
-          const querySnapshot = await getDocs(q);
-
-          if (!querySnapshot.empty) {
-            querySnapshot.forEach(async (frameDoc) => {
-              const frameData = frameDoc.data();
-              console.log(`Found frame in inventory: ${frameData.name}`);
-              const newSoldQty = Math.max(0, (frameData.soldQty || 0) - soldQty);
-              const newErrorQty = Math.max(0, (frameData.errorQty || 0) - errorQty);
-              const newRemainingQty = (frameData.totalQty || 0) - newSoldQty;
-
-              await updateDoc(doc(db, "frames", frameDoc.id), {
-                soldQty: newSoldQty,
-                errorQty: newErrorQty,
-                remainingQty: newRemainingQty,
-                lastUpdated: new Date().toISOString(),
-              });
-              updatedFrames++;
-              console.log(`Successfully updated frame inventory: ${frameData.name}`);
-            });
-          }
-        } catch (error) {
-          console.error(`Error returning frame ${item.name} to inventory:`, error);
-        }
-      } else if (item.type === 'Accessories') {
-        // Return accessories to inventory
-        try {
-          const q = query(
-            collection(db, "accessories"),
-            where("name", "==", item.name),
-            where("category", "==", item.category || "")
-          );
-
-          const querySnapshot = await getDocs(q);
-
-          if (!querySnapshot.empty) {
-            querySnapshot.forEach(async (accDoc) => {
-              const accData = accDoc.data();
-              console.log(`Found accessory in inventory: ${accData.name}`);
-              const newSoldQty = Math.max(0, (accData.soldQty || 0) - soldQty);
-              const newErrorQty = Math.max(0, (accData.errorQty || 0) - errorQty);
-              const newRemainingQty = (accData.totalQty || 0) - newSoldQty;
-
-              await updateDoc(doc(db, "accessories", accDoc.id), {
-                soldQty: newSoldQty,
-                errorQty: newErrorQty,
-                remainingQty: newRemainingQty,
-                lastUpdated: new Date().toISOString(),
-              });
-              updatedAccessories++;
-              console.log(`Successfully updated accessory inventory: ${accData.name}`);
-            });
-          }
-        } catch (error) {
-          console.error(`Error returning accessory ${item.name} to inventory:`, error);
-        }
+        await returnLensToInventory(item, soldQty, errorQty);
+      } 
+      // Handle other item types
+      else {
+        await returnGenericItemToInventory(item, soldQty, errorQty);
       }
+      
+      totalReturned += totalQty;
+      soldReturned += soldQty;
+      errorReturned += errorQty;
     }
-
-    const successMessage = `Successfully returned ${returnData.totalSoldQuantity} sold items and ${returnData.totalErrorQuantity} error items to inventory. Updated: ${updatedLenses} lenses, ${updatedFrames} frames, ${updatedAccessories} accessories.`;
-    console.log(successMessage);
+    
+    console.log(`✅ VOC inventory return completed: ${totalReturned} items returned`);
+    
     return {
       success: true,
-      message: successMessage,
+      message: `Successfully returned ${totalReturned} items to inventory`,
       returnedItems: {
-        soldItems: returnData.totalSoldQuantity,
-        errorItems: returnData.totalErrorQuantity,
-        totalItems: returnData.totalSoldQuantity + returnData.totalErrorQuantity
+        totalItems: totalReturned,
+        soldItems: soldReturned,
+        errorItems: errorReturned
       }
     };
+    
   } catch (error) {
-    console.error('Error returning VOC items to inventory:', error);
-    const errorMessage = 'Failed to return items to inventory: ' + (error as Error).message;
-    console.log(errorMessage);
+    console.error('❌ Error returning VOC items to inventory:', error);
     return {
       success: false,
-      message: errorMessage,
+      message: `Failed to return items to inventory: ${error}`,
       returnedItems: {
+        totalItems: 0,
         soldItems: 0,
-        errorItems: 0,
-        totalItems: 0
+        errorItems: 0
       }
     };
   }
 };
 
 /**
- * Update lens stock for VOC creation with error quantity tracking
+ * Return lens items to inventory - handles flattop bifocal lenses with right/left quantities
  */
-export const updateLensStockForVOCWithError = async (
-  lens: ILens, 
-  soldQuantity: number = 1, 
-  errorQuantity: number = 0
-) => {
-  if (!lens.name || !lens.category || !lens.type) {
-    console.error("Lens details are incomplete, skipping stock update.", lens);
-    return;
-  }
+const returnLensToInventory = async (item: VocItem, soldQty: number, errorQty: number): Promise<void> => {
+  console.log(`👓 Returning lens to inventory: ${item.name}`);
   
-  try {
-    const q = query(
-      collection(db, "lenses"),
-      where("name", "==", lens.name),
-      where("category", "==", lens.category),
-      where("type", "==", lens.type),
-      where("power.sph", "==", lens.power.sph),
-      where("power.cyl", "==", lens.power.cyl),
-      where("power.axis", "==", lens.power.axis),
-      where("power.add", "==", lens.power.add)
-    );
-
-    const querySnapshot = await getDocs(q);
-
-    if (querySnapshot.empty) {
-      console.warn("No matching lens found in inventory for stock update", lens);
-      return;
-    }
-
-    querySnapshot.forEach(async (lensDoc) => {
-      const lensData = lensDoc.data() as LensStock;
-      const newSoldQty = (lensData.soldQty || 0) + soldQuantity;
-      const newErrorQty = (lensData.errorQty || 0) + errorQuantity;
-      const newRemainingQty = lensData.totalQty - newSoldQty - newErrorQty;
-
-      await updateDoc(doc(db, "lenses", lensDoc.id), {
-        soldQty: newSoldQty,
-        errorQty: newErrorQty,
-        remainingQty: Math.max(0, newRemainingQty),
-        lastUpdated: new Date().toISOString(),
-      });
-      
-      console.log(`Stock updated for lens: ${lensData.name} - Sold: +${soldQuantity}, Error: +${errorQuantity}`);
-    });
-  } catch (error) {
-    console.error("Error updating lens stock with error tracking:", error);
-  }
-};
-
-/**
- * Return lens stock when VOC is deleted or returned
- */
-export const returnLensStockForVOC = async (lens: ILens, quantityToReturn: number) => {
-  if (!lens.name || !lens.category || !lens.type || quantityToReturn <= 0) {
-    console.error("Lens details are incomplete or invalid quantity, skipping stock return.", lens, quantityToReturn);
-    return;
-  }
+  // Check if this is a flattop/bifocal lens with right/left quantities
+  const hasRightLeft = item.details?.rightQty !== undefined || item.details?.leftQty !== undefined;
   
-  try {
-    const q = query(
-      collection(db, "lenses"),
-      where("name", "==", lens.name),
-      where("category", "==", lens.category),
-      where("type", "==", lens.type),
-      where("power.sph", "==", lens.power.sph),
-      where("power.cyl", "==", lens.power.cyl),
-      where("power.axis", "==", lens.power.axis),
-      where("power.add", "==", lens.power.add)
-    );
-
-    const querySnapshot = await getDocs(q);
-
-    if (querySnapshot.empty) {
-      console.warn("No matching lens found in inventory for stock return", lens);
-      return;
-    }
-
-    querySnapshot.forEach(async (lensDoc) => {
-      const lensData = lensDoc.data() as LensStock;
-      const newSoldQty = Math.max(0, (lensData.soldQty || 0) - quantityToReturn);
-      const newRemainingQty = lensData.totalQty - newSoldQty;
-
-      await updateDoc(doc(db, "lenses", lensDoc.id), {
-        soldQty: newSoldQty,
-        remainingQty: newRemainingQty,
-      });
-      console.log(`Stock returned for lens: ${lensData.name}, quantity: ${quantityToReturn}`);
-    });
-  } catch (error) {
-    console.error("Error returning lens stock:", error);
-  }
-};
-
-/**
- * Return lens stock with separate sold and error quantities
- */
-export const returnLensStockForVOCWithError = async (
-  lens: ILens, 
-  soldQuantityToReturn: number = 0, 
-  errorQuantityToReturn: number = 0
-) => {
-  if (!lens.name || !lens.category || !lens.type) {
-    console.error("Lens details are incomplete, skipping stock return.", lens);
-    return;
-  }
-  
-  const totalQuantityToReturn = soldQuantityToReturn + errorQuantityToReturn;
-  if (totalQuantityToReturn <= 0) {
-    console.warn("No quantity to return for lens:", lens.name);
-    return;
-  }
-  
-  try {
-    const q = query(
-      collection(db, "lenses"),
-      where("name", "==", lens.name),
-      where("category", "==", lens.category),
-      where("type", "==", lens.type),
-      where("power.sph", "==", lens.power.sph),
-      where("power.cyl", "==", lens.power.cyl),
-      where("power.axis", "==", lens.power.axis),
-      where("power.add", "==", lens.power.add)
-    );
-
-    const querySnapshot = await getDocs(q);
-
-    if (querySnapshot.empty) {
-      console.warn("No matching lens found in inventory for stock return", lens);
-      return;
-    }
-
-    querySnapshot.forEach(async (lensDoc) => {
-      const lensData = lensDoc.data() as LensStock;
-      const newSoldQty = Math.max(0, (lensData.soldQty || 0) - soldQuantityToReturn);
-      const newErrorQty = Math.max(0, (lensData.errorQty || 0) - errorQuantityToReturn);
-      const newRemainingQty = lensData.totalQty - newSoldQty - newErrorQty;
-
-      await updateDoc(doc(db, "lenses", lensDoc.id), {
-        soldQty: newSoldQty,
-        errorQty: newErrorQty,
-        remainingQty: Math.max(0, newRemainingQty),
-        lastUpdated: new Date().toISOString(),
-      });
-      
-      console.log(`Stock returned for lens: ${lensData.name} - Sold: -${soldQuantityToReturn}, Error: -${errorQuantityToReturn}`);
-    });
-  } catch (error) {
-    console.error("Error returning lens stock with error tracking:", error);
-  }
-};
-
-/**
- * Create or update VOC in Firebase with proper error quantity indexing
- */
-export const createVOCInFirebase = async (vocData: {
-  vocNumber: string;
-  customerName: string;
-  customerPhone?: string;
-  customerAddress?: string;
-  items: VocItem[];
-  totalAmount: number;
-  originalAmount: number;
-  globalDiscount?: number;
-  hasError?: boolean;
-  notes?: string;
-}): Promise<{ success: boolean; message: string; vocId?: string }> => {
-  try {
-    // Calculate totals
-    const totalSoldQty = vocData.items.reduce((sum, item) => sum + calculateSoldQuantity(item), 0);
-    const totalErrorQty = vocData.items.reduce((sum, item) => sum + calculateErrorQuantity(item), 0);
-    const errorRate = totalSoldQty + totalErrorQty > 0 ? (totalErrorQty / (totalSoldQty + totalErrorQty)) * 100 : 0;
+  if (hasRightLeft) {
+    console.log(`🔧 Processing flattop/bifocal lens with right/left quantities`);
+    console.log(`📊 RightQty: ${item.details?.rightQty}, LeftQty: ${item.details?.leftQty}`);
     
-    // Prepare VOC document for Firebase
-    const vocDocument = {
-      vocNumber: vocData.vocNumber,
-      customerName: vocData.customerName,
-      customerPhone: vocData.customerPhone || '',
-      customerAddress: vocData.customerAddress || '',
-      items: vocData.items.map(item => ({
-        ...item,
-        soldQty: calculateSoldQuantity(item),
-        errorQty: calculateErrorQuantity(item),
-        // Ensure error details are properly indexed
-        hasError: item.hasError || false,
-        errorCategory: item.errorCategory || null,
-        errorDescription: item.errorDescription || null,
-      })),
-      totalAmount: vocData.totalAmount,
-      originalAmount: vocData.originalAmount,
-      globalDiscount: vocData.globalDiscount || 0,
-      totalSoldQty,
-      totalErrorQty,
-      errorRate,
-      hasError: vocData.hasError || totalErrorQty > 0,
-      status: 'active',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      notes: vocData.notes || '',
-    };
+    await returnFlattopLensToInventory(item, soldQty, errorQty);
+  } else {
+    console.log(`🔧 Processing regular lens`);
+    await returnRegularLensToInventory(item, soldQty, errorQty);
+  }
+};
 
-    // Add to Firebase
-    const docRef = await addDoc(collection(db, "vocs"), vocDocument);
+/**
+ * Return flattop/bifocal lens with right/left quantities to inventory
+ */
+const returnFlattopLensToInventory = async (item: VocItem, soldQty: number, errorQty: number): Promise<void> => {
+  try {
+    console.log(`🔍 Searching for flattop lens in inventory:`, {
+      name: item.name,
+      code: item.code,
+      category: item.category,
+      details: item.details
+    });
     
-    // Update inventory for each item
-    for (const item of vocData.items) {
-      if (item.type === 'Lens' && item.details) {
-        const lensData: ILens = {
-          name: item.name,
-          category: item.category || '',
-          type: item.type,
-          power: {
-            sph: item.details.sph || '',
-            cyl: item.details.cyl || '',
-            axis: item.details.axis || '',
-            add: item.details.addition || ''
-          }
-        };
+    let querySnapshot;
+    
+    // Strategy 1: Try matching by code first (most precise)
+    if (item.code) {
+      console.log(`🔍 Step 1: Searching by code: ${item.code}`);
+      const codeQuery = query(
+        collection(db, 'lenses'),
+        where('code', '==', item.code)
+      );
+      querySnapshot = await getDocs(codeQuery);
+      console.log(`📊 Code search found: ${querySnapshot.docs.length} results`);
+    }
+    
+    // Strategy 2: If no results, try matching by category and type
+    if (!querySnapshot || querySnapshot.empty) {
+      console.log(`🔍 Step 2: Searching by category and type`);
+      const categoryQuery = query(
+        collection(db, 'lenses'),
+        where('category', '==', item.category || ''),
+        where('type', '==', 'Bifocal')
+      );
+      querySnapshot = await getDocs(categoryQuery);
+      console.log(`📊 Category search found: ${querySnapshot.docs.length} results`);
+      
+      // Filter by optical power if available
+      if (querySnapshot && !querySnapshot.empty && item.details) {
+        console.log(`🔍 Step 2a: Filtering by optical power`);
+        const filteredDocs = querySnapshot.docs.filter(doc => {
+          const data = doc.data();
+          return (
+            (!item.details.sph || data.sph === item.details.sph) &&
+            (!item.details.cyl || data.cyl === item.details.cyl) &&
+            (!item.details.axis || data.axis === item.details.axis) &&
+            (!item.details.addition || data.addition === item.details.addition)
+          );
+        });
         
-        const soldQty = calculateSoldQuantity(item);
-        const errorQty = calculateErrorQuantity(item);
-        
-        await updateLensStockForVOCWithError(lensData, soldQty, errorQty);
-      }
-    }
-    
-    return {
-      success: true,
-      message: `VOC ${vocData.vocNumber} created successfully with ${totalSoldQty} sold items and ${totalErrorQty} error items`,
-      vocId: docRef.id
-    };
-  } catch (error) {
-    console.error('Error creating VOC in Firebase:', error);
-    return {
-      success: false,
-      message: `Failed to create VOC: ${error instanceof Error ? error.message : 'Unknown error'}`
-    };
-  }
-};
-
-/**
- * Update VOC error quantities in Firebase
- */
-export const updateVOCErrorQuantitiesInFirebase = async (
-  vocId: string,
-  items: VocItem[]
-): Promise<{ success: boolean; message: string }> => {
-  try {
-    const totalSoldQty = items.reduce((sum, item) => sum + calculateSoldQuantity(item), 0);
-    const totalErrorQty = items.reduce((sum, item) => sum + calculateErrorQuantity(item), 0);
-    const errorRate = totalSoldQty + totalErrorQty > 0 ? (totalErrorQty / (totalSoldQty + totalErrorQty)) * 100 : 0;
-    
-    await updateDoc(doc(db, "vocs", vocId), {
-      items: items.map(item => ({
-        ...item,
-        soldQty: calculateSoldQuantity(item),
-        errorQty: calculateErrorQuantity(item),
-        hasError: item.hasError || false,
-        errorCategory: item.errorCategory || null,
-        errorDescription: item.errorDescription || null,
-      })),
-      totalSoldQty,
-      totalErrorQty,
-      errorRate,
-      hasError: totalErrorQty > 0,
-      updatedAt: new Date().toISOString(),
-    });
-    
-    return {
-      success: true,
-      message: `VOC error quantities updated successfully`
-    };
-  } catch (error) {
-    console.error('Error updating VOC error quantities:', error);
-    return {
-      success: false,
-      message: `Failed to update VOC error quantities: ${error instanceof Error ? error.message : 'Unknown error'}`
-    };
-  }
-};
-/**
- * Bulk inventory update for VOC return
- */
-export const bulkUpdateInventoryForVocReturn = async (
-  inventoryUpdates: Array<{
-    item: VocItem;
-    soldQuantityToReturn: number;
-    errorQuantityToReturn: number;
-    totalQuantityToReturn: number;
-  }>
-): Promise<{
-  success: boolean;
-  message: string;
-  updatedItems: number;
-}> => {
-  try {
-    console.log(`Starting bulk inventory update for ${inventoryUpdates.length} items...`);
-    let updatedItems = 0;
-    
-    for (const update of inventoryUpdates) {
-      const { item, soldQuantityToReturn, errorQuantityToReturn, totalQuantityToReturn } = update;
-      
-      console.log(`Processing bulk update for: ${item.name}`);
-      console.log(`- Sold quantity to return: ${soldQuantityToReturn}`);
-      console.log(`- Error quantity to return: ${errorQuantityToReturn}`);
-      console.log(`- Total quantity to return: ${totalQuantityToReturn}`);
-      
-      // Handle lens items
-      if (item.type === 'Lens' && item.details) {
-        const lensData: ILens = {
-          name: item.name,
-          category: item.category || '',
-          type: item.type,
-          power: {
-            sph: item.details.sph || '',
-            cyl: item.details.cyl || '',
-            axis: item.details.axis || '',
-            add: item.details.addition || ''
-          }
-        };
-        
-        // Return sold and error quantities separately to inventory
-        if (soldQuantityToReturn > 0 || errorQuantityToReturn > 0) {
-          await returnLensStockForVOCWithError(lensData, soldQuantityToReturn, errorQuantityToReturn);
-          updatedItems++;
-          console.log(`Successfully updated lens inventory: ${item.name}`);
+        if (filteredDocs.length > 0) {
+          querySnapshot = { docs: filteredDocs, empty: false } as any;
+          console.log(`✅ Optical power filtering found: ${filteredDocs.length} matches`);
         }
       }
-      
-      // Handle other item types (Frame, Accessories, Contact Lens)
-      // Add specific logic for other inventory types as needed
-      
-      console.log(`Completed return to inventory: ${item.name} - Sold: ${soldQuantityToReturn}, Error: ${errorQuantityToReturn}`);
     }
     
-    const successMessage = `Successfully updated ${updatedItems} items in inventory`;
-    console.log(successMessage);
+    // Strategy 3: If still no results, try broader category search
+    if (!querySnapshot || querySnapshot.empty) {
+      console.log(`🔍 Step 3: Trying broader category search`);
+      if (item.category && item.category.includes('flattop')) {
+        const broadQuery = query(
+          collection(db, 'lenses'),
+          where('category', '==', item.category)
+        );
+        querySnapshot = await getDocs(broadQuery);
+        console.log(`📊 Broad category search found: ${querySnapshot.docs.length} results`);
+      }
+    }
     
-    return {
-      success: true,
-      message: successMessage,
-      updatedItems
+    // Strategy 4: Last resort - search by name pattern
+    if (!querySnapshot || querySnapshot.empty) {
+      console.log(`🔍 Step 4: Trying name-based search`);
+      const allLensesQuery = query(collection(db, 'lenses'));
+      const allLenses = await getDocs(allLensesQuery);
+      
+      const nameParts = item.name.toLowerCase().split(' ');
+      const matchingDocs = allLenses.docs.filter(doc => {
+        const data = doc.data();
+        const lensName = (data.name || data.code || '').toLowerCase();
+        return nameParts.some(part => part.length > 3 && lensName.includes(part));
+      });
+      
+      if (matchingDocs.length > 0) {
+        querySnapshot = { docs: matchingDocs, empty: false } as any;
+        console.log(`✅ Name pattern search found: ${matchingDocs.length} matches`);
+      }
+    }
+    
+    if (!querySnapshot || querySnapshot.empty) {
+      console.warn(`⚠️ No matching flattop lens found in inventory after all search strategies for: ${item.name}`);
+      console.warn(`📝 Search criteria used:`, {
+        code: item.code,
+        name: item.name,
+        category: item.category,
+        type: 'Bifocal',
+        optical: item.details
+      });
+      return;
+    }
+    
+    // Process the first matching lens
+    const lensDoc = querySnapshot.docs[0];
+    const lensData = lensDoc.data();
+    
+    console.log(`📦 Found matching flattop lens in inventory:`, {
+      id: lensDoc.id,
+      code: lensData.code,
+      name: lensData.name,
+      category: lensData.category,
+      currentRightQty: lensData.rightQty || 0,
+      currentLeftQty: lensData.leftQty || 0,
+      currentTotalQty: lensData.qty || 0
+    });
+    
+    // Calculate quantities to return - use exact quantities from VOC
+    const rightQtyToReturn = item.details?.rightQty || 0;
+    const leftQtyToReturn = item.details?.leftQty || 0;
+    
+    console.log(`🔄 Returning exact quantities from VOC:`, {
+      rightQtyToReturn,
+      leftQtyToReturn,
+      totalToReturn: rightQtyToReturn + leftQtyToReturn
+    });
+    
+    // Update the lens inventory with returned quantities
+    const updateData: any = {
+      updatedAt: serverTimestamp(),
     };
+    
+    // Return right quantity
+    if (rightQtyToReturn > 0) {
+      updateData.rightQty = (lensData.rightQty || 0) + rightQtyToReturn;
+      console.log(`➡️ Right qty: ${lensData.rightQty || 0} + ${rightQtyToReturn} = ${updateData.rightQty}`);
+    }
+    
+    // Return left quantity  
+    if (leftQtyToReturn > 0) {
+      updateData.leftQty = (lensData.leftQty || 0) + leftQtyToReturn;
+      console.log(`⬅️ Left qty: ${lensData.leftQty || 0} + ${leftQtyToReturn} = ${updateData.leftQty}`);
+    }
+    
+    // Update total quantity
+    const totalReturnQty = rightQtyToReturn + leftQtyToReturn;
+    if (totalReturnQty > 0) {
+      updateData.qty = (lensData.qty || 0) + totalReturnQty;
+      console.log(`🔢 Total qty: ${lensData.qty || 0} + ${totalReturnQty} = ${updateData.qty}`);
+    }
+    
+    // Reduce sold quantity if it was marked as sold
+    if (lensData.soldQty && soldQty > 0) {
+      updateData.soldQty = Math.max(0, (lensData.soldQty || 0) - soldQty);
+      console.log(`📉 Sold qty: ${lensData.soldQty || 0} - ${soldQty} = ${updateData.soldQty}`);
+    }
+    
+    // Reduce right/left sold quantities if they exist
+    if (lensData.rightSoldQty && rightQtyToReturn > 0) {
+      updateData.rightSoldQty = Math.max(0, (lensData.rightSoldQty || 0) - rightQtyToReturn);
+      console.log(`📉 Right sold qty: ${lensData.rightSoldQty || 0} - ${rightQtyToReturn} = ${updateData.rightSoldQty}`);
+    }
+    
+    if (lensData.leftSoldQty && leftQtyToReturn > 0) {
+      updateData.leftSoldQty = Math.max(0, (lensData.leftSoldQty || 0) - leftQtyToReturn);
+      console.log(`📉 Left sold qty: ${lensData.leftSoldQty || 0} - ${leftQtyToReturn} = ${updateData.leftSoldQty}`);
+    }
+    
+    console.log(`🔧 Updating lens document with:`, updateData);
+    await updateDoc(doc(db, 'lenses', lensDoc.id), updateData);
+    
+    console.log(`✅ Flattop lens inventory updated successfully! Lens: ${lensData.code || lensData.name}`);
+    
   } catch (error) {
-    console.error('Error in bulk inventory update:', error);
-    const errorMessage = `Failed to update inventory: ${error instanceof Error ? error.message : 'Unknown error'}`;
-    console.log(errorMessage);
-    return {
-      success: false,
-      message: errorMessage,
-      updatedItems: 0
-    };
+    console.error(`❌ Error returning flattop lens to inventory:`, error);
+    throw error;
   }
 };
 
 /**
- * Enhanced VOC return process with comprehensive inventory update
- * This function handles the complete process of returning both sold and error quantities to inventory
+ * Return regular lens to inventory
  */
-export const processVocReturn = async (vocItems: VocItem[]): Promise<{
-  success: boolean;
-  message: string;
-  details: {
-    totalSoldReturned: number;
-    totalErrorReturned: number;
-    itemsUpdated: number;
-  };
-}> => {
+const returnRegularLensToInventory = async (item: VocItem, soldQty: number, errorQty: number): Promise<void> => {
   try {
-    console.log('Starting complete VOC return process...');
-    console.log(`Processing ${vocItems.length} items for return`);
+    console.log(`🔍 Searching for regular lens in inventory:`, {
+      name: item.name,
+      code: item.code,
+      category: item.category,
+      type: item.type
+    });
     
-    // Calculate what needs to be returned
-    const returnData = returnItemsToInventory(vocItems);
+    let querySnapshot;
     
-    console.log(`Return data calculated:`);
-    console.log(`- Total sold to return: ${returnData.totalSoldQuantity}`);
-    console.log(`- Total error to return: ${returnData.totalErrorQuantity}`);
-    console.log(`- Inventory updates needed: ${returnData.inventoryUpdates.length}`);
-    
-    // Update inventory
-    const inventoryResult = await bulkUpdateInventoryForVocReturn(returnData.inventoryUpdates);
-    
-    if (!inventoryResult.success) {
-      console.error('Inventory update failed:', inventoryResult.message);
-      throw new Error(inventoryResult.message);
+    // Strategy 1: Try matching by code first
+    if (item.code) {
+      console.log(`🔍 Step 1: Searching by code: ${item.code}`);
+      const codeQuery = query(
+        collection(db, 'lenses'),
+        where('code', '==', item.code)
+      );
+      querySnapshot = await getDocs(codeQuery);
+      console.log(`📊 Code search found: ${querySnapshot.docs.length} results`);
     }
     
-    const successMessage = `VOC successfully returned to inventory. Sold items: ${returnData.totalSoldQuantity}, Error items: ${returnData.totalErrorQuantity}`;
-    console.log(successMessage);
+    // Strategy 2: If no results, try by code with category
+    if (!querySnapshot || querySnapshot.empty) {
+      console.log(`🔍 Step 2: Searching by code and category`);
+      if (item.code && item.category) {
+        const codeAndCategoryQuery = query(
+          collection(db, 'lenses'),
+          where('code', '==', item.code),
+          where('category', '==', item.category)
+        );
+        querySnapshot = await getDocs(codeAndCategoryQuery);
+        console.log(`📊 Code + Category search found: ${querySnapshot.docs.length} results`);
+      }
+    }
     
-    return {
-      success: true,
-      message: successMessage,
-      details: {
-        totalSoldReturned: returnData.totalSoldQuantity,
-        totalErrorReturned: returnData.totalErrorQuantity,
-        itemsUpdated: inventoryResult.updatedItems
+    // Strategy 3: Try matching by name
+    if (!querySnapshot || querySnapshot.empty) {
+      console.log(`🔍 Step 3: Searching by name: ${item.name}`);
+      const nameQuery = query(
+        collection(db, 'lenses'),
+        where('name', '==', item.name)
+      );
+      querySnapshot = await getDocs(nameQuery);
+      console.log(`📊 Name search found: ${querySnapshot.docs.length} results`);
+    }
+    
+    // Strategy 4: Try matching by category and type
+    if (!querySnapshot || querySnapshot.empty) {
+      console.log(`🔍 Step 4: Searching by category and type`);
+      if (item.category && item.type) {
+        const categoryTypeQuery = query(
+          collection(db, 'lenses'),
+          where('category', '==', item.category),
+          where('type', '==', item.type)
+        );
+        querySnapshot = await getDocs(categoryTypeQuery);
+        console.log(`📊 Category + Type search found: ${querySnapshot.docs.length} results`);
+        
+        // Further filter by optical specs if available
+        if (querySnapshot && !querySnapshot.empty && item.details) {
+          console.log(`🔍 Step 4a: Filtering by optical specs`);
+          const filteredDocs = querySnapshot.docs.filter(doc => {
+            const data = doc.data();
+            return (
+              (!item.details.sph || data.sph === item.details.sph) &&
+              (!item.details.cyl || data.cyl === item.details.cyl) &&
+              (!item.details.axis || data.axis === item.details.axis) &&
+              (!item.details.addition || data.addition === item.details.addition)
+            );
+          });
+          
+          if (filteredDocs.length > 0) {
+            querySnapshot = { docs: filteredDocs, empty: false } as any;
+            console.log(`✅ Optical specs filtering found: ${filteredDocs.length} matches`);
+          }
+        }
       }
+    }
+    
+    if (!querySnapshot || querySnapshot.empty) {
+      console.warn(`⚠️ No matching regular lens found in inventory after all search strategies for: ${item.name}`);
+      console.warn(`📝 Search criteria used:`, {
+        code: item.code,
+        name: item.name,
+        category: item.category,
+        type: item.type,
+        optical: item.details
+      });
+      return;
+    }
+    
+    const lensDoc = querySnapshot.docs[0];
+    const lensData = lensDoc.data();
+    
+    console.log(`📦 Found matching regular lens in inventory:`, {
+      id: lensDoc.id,
+      code: lensData.code,
+      name: lensData.name,
+      category: lensData.category,
+      currentQty: lensData.qty || 0,
+      currentSoldQty: lensData.soldQty || 0
+    });
+    
+    const totalReturnQty = soldQty + errorQty;
+    console.log(`🔄 Returning total quantity: ${totalReturnQty} (sold: ${soldQty}, error: ${errorQty})`);
+    
+    // Update the lens inventory
+    const updateData: any = {
+      qty: (lensData.qty || 0) + totalReturnQty,
+      updatedAt: serverTimestamp(),
     };
+    
+    // Reduce sold quantity if it was marked as sold
+    if (lensData.soldQty && soldQty > 0) {
+      updateData.soldQty = Math.max(0, (lensData.soldQty || 0) - soldQty);
+      console.log(`📉 Sold qty: ${lensData.soldQty || 0} - ${soldQty} = ${updateData.soldQty}`);
+    }
+    
+    console.log(`🔧 Updating regular lens document with:`, updateData);
+    await updateDoc(doc(db, 'lenses', lensDoc.id), updateData);
+    
+    console.log(`✅ Regular lens inventory updated successfully! Lens: ${lensData.code || lensData.name}`);
   } catch (error) {
-    console.error('Error processing VOC return:', error);
-    const errorMessage = `Failed to process VOC return: ${error instanceof Error ? error.message : 'Unknown error'}`;
-    console.log(errorMessage);
-    return {
-      success: false,
-      message: errorMessage,
-      details: {
-        totalSoldReturned: 0,
-        totalErrorReturned: 0,
-        itemsUpdated: 0
-      }
-    };
+    console.error(`❌ Error returning regular lens to inventory:`, error);
+    throw error;
   }
+};
+
+/**
+ * Return generic items (frames, accessories, contact lenses) to inventory
+ */
+const returnGenericItemToInventory = async (item: VocItem, soldQty: number, errorQty: number): Promise<void> => {
+  try {
+    let collectionName = '';
+    
+    // Determine collection based on item type
+    switch (item.type) {
+      case 'Frame':
+        collectionName = 'frames';
+        break;
+      case 'Accessories':
+        collectionName = 'accessories';
+        break;
+      case 'Contact Lens':
+        collectionName = 'contactLenses';
+        break;
+      default:
+        console.warn(`Unknown item type: ${item.type}`);
+        return;
+    }
+    
+    // Find matching item in inventory
+    const itemQuery = query(
+      collection(db, collectionName),
+      where('code', '==', item.code || item.name)
+    );
+    
+    const querySnapshot = await getDocs(itemQuery);
+    
+    if (!querySnapshot.empty) {
+      const itemDoc = querySnapshot.docs[0];
+      const itemData = itemDoc.data();
+      
+      console.log(`📦 Found matching ${item.type} in inventory:`, itemData.code);
+      
+      const totalReturnQty = soldQty + errorQty;
+      
+      // Update the item inventory
+      const updateData: any = {
+        qty: (itemData.qty || 0) + totalReturnQty,
+        updatedAt: serverTimestamp(),
+      };
+      
+      // Reduce sold quantity if it was marked as sold
+      if (itemData.soldQty && soldQty > 0) {
+        updateData.soldQty = Math.max(0, (itemData.soldQty || 0) - soldQty);
+      }
+      
+      await updateDoc(doc(db, collectionName, itemDoc.id), updateData);
+      
+      console.log(`✅ ${item.type} inventory updated successfully`);
+    } else {
+      console.warn(`⚠️ No matching ${item.type} found in inventory for: ${item.name}`);
+    }
+  } catch (error) {
+    console.error(`❌ Error returning ${item.type} to inventory:`, error);
+    throw error;
+  }
+};
+
+/**
+ * Legacy function for backwards compatibility
+ */
+export const returnInventoryForVoc = async (
+  items: VocItem[], 
+  updateCallback?: (updates: any) => Promise<void>
+): Promise<{ success: boolean; message: string }> => {
+  console.log('🔄 Legacy returnInventoryForVoc called, delegating to returnVOCItemsToInventory');
+  
+  const result = await returnVOCItemsToInventory(items);
+  
+  if (updateCallback && result.success) {
+    try {
+      await updateCallback({
+        returnedItems: result.returnedItems,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error('❌ Error in update callback:', error);
+    }
+  }
+  
+  return {
+    success: result.success,
+    message: result.message
+  };
 };

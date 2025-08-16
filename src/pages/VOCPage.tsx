@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react'
-import { collection, deleteDoc, doc, getDocs } from 'firebase/firestore'
+import { collection, deleteDoc, doc, getDocs, updateDoc, query, where } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { VOC } from '../type/voc'
 import VocTable from '../components/voc/VocTable'
-import { returnInventoryForVoc } from '../lib/InventoryCalculation'
+import { returnInventoryForVoc, returnVOCItemsToInventory, calculateSoldQuantity, calculateErrorQuantity } from '../lib/InventoryCalculation'
 import VOCTestData from '../components/voc/VOCTestData'
 import { createTestVocItems } from '../lib/vocQuantityUtils'
 import toast from 'react-hot-toast'
@@ -56,15 +56,74 @@ export const VOCPage: React.FC = () => {
       toast.error('Failed to return inventory')
     }
   }
-  const [vocs, setVocs] = useState<Voc[]>([])
 
   const handleDelete = async (id: string) => {
     try {
-      await deleteDoc(doc(db, 'vocs', id))
-      toast.success('VOC deleted successfully')
+      // First find the VOC to get its items
+      const voc = vocs.find(v => v.id === id)
+      if (!voc) {
+        toast.error('VOC not found')
+        return
+      }
+
+      // Show confirmation
+      if (!window.confirm(`Are you sure you want to delete VOC ${voc.vocNumber}? This will return all items to inventory.`)) {
+        return
+      }
+
+      toast.loading('Returning items to inventory and deleting VOC...', { duration: 2000 })
+      
+      // Return all items to inventory first (including flattop lens right/left quantities)
+      console.log('🔄 Starting VOC deletion process for:', voc.vocNumber)
+      console.log('📦 Items to return:', voc.items)
+      
+      // Check for flattop lenses specifically
+      const flattopItems = voc.items.filter(item => 
+        item.type === 'Lens' && 
+        (item.details?.rightQty !== undefined || item.details?.leftQty !== undefined)
+      )
+      
+      if (flattopItems.length > 0) {
+        console.log('👓 Found flattop/bifocal lenses to return:')
+        flattopItems.forEach(item => {
+          console.log(`- ${item.name}: rightQty=${item.details?.rightQty}, leftQty=${item.details?.leftQty}`)
+          console.log(`  Category: ${item.category}, Type: ${item.type}`)
+          console.log(`  Code: ${item.code}`)
+          if (item.details) {
+            console.log(`  Optical specs: SPH=${item.details.sph}, CYL=${item.details.cyl}, AXIS=${item.details.axis}, ADD=${item.details.addition}`)
+          }
+        })
+      }
+      
+      console.log('🔄 Calling returnVOCItemsToInventory with items:', voc.items.length)
+      const returnResult = await returnVOCItemsToInventory(voc.items)
+      console.log('🔄 Return result:', returnResult)
+      
+      if (returnResult.success) {
+        // Only delete the VOC if inventory return was successful
+        await deleteDoc(doc(db, 'vocs', id))
+        
+        toast.success(
+          `VOC deleted successfully! Returned ${returnResult.returnedItems.totalItems} items to inventory (${returnResult.returnedItems.soldItems} sold, ${returnResult.returnedItems.errorItems} error).`
+        )
+        
+        console.log('✅ VOC deletion summary:', {
+          vocId: id,
+          vocNumber: voc.vocNumber,
+          itemsReturned: returnResult.returnedItems.totalItems,
+          soldItemsReturned: returnResult.returnedItems.soldItems,
+          errorItemsReturned: returnResult.returnedItems.errorItems,
+          flattopItemsProcessed: flattopItems.length
+        })
+      } else {
+        console.error('❌ Failed to return items to inventory:', returnResult.message)
+        toast.error(`Failed to return items to inventory: ${returnResult.message}`)
+        return
+      }
+      
       await load()
     } catch (error) {
-      console.error('Failed to delete VOC:', error)
+      console.error('❌ Failed to delete VOC:', error)
       toast.error('Failed to delete VOC')
     }
   }
@@ -94,6 +153,43 @@ export const VOCPage: React.FC = () => {
     }
   }
 
+  // Test function for flattop lens return
+  const testFlattopReturn = async () => {
+    try {
+      console.log('🧪 Testing flattop lens return functionality...')
+      
+      // Create a test VOC with flattop lens
+      const testFlattopItem = {
+        id: `test-${Date.now()}`,
+        name: 'Test BBPG Flattop +1.00 +2.00',
+        type: 'Lens' as const,
+        category: 'bbpgflattop',
+        quantity: 2,
+        price: 25000,
+        hasError: false,
+        details: {
+          sph: '+1.00',
+          cyl: '0.00',
+          axis: '0',
+          addition: '+2.00',
+          rightQty: 1,
+          leftQty: 1
+        }
+      }
+      
+      console.log('🔧 Test flattop item:', testFlattopItem)
+      
+      // Test the return logic
+      const testResult = await returnVOCItemsToInventory([testFlattopItem])
+      console.log('📊 Test result:', testResult)
+      
+      toast.info('Flattop return test completed - check console for details')
+    } catch (error) {
+      console.error('Test failed:', error)
+      toast.error('Flattop return test failed')
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-4 p-4 bg-gray-50 dark:bg-gray-800 rounded">
@@ -109,8 +205,14 @@ export const VOCPage: React.FC = () => {
         >
           Create Real Test VOC
         </button>
+        <button
+          onClick={testFlattopReturn}
+          className="px-4 py-2 bg-purple-500 text-white rounded hover:bg-purple-600 transition-colors"
+        >
+          Test Flattop Return
+        </button>
         <span className="text-sm text-gray-600 dark:text-gray-400">
-          Create actual VOC in database with 0.5 sold/error quantities
+          Test flattop lens right/left quantity return functionality
         </span>
       </div>
       

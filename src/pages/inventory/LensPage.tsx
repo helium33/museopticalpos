@@ -11,6 +11,7 @@ import LensForm, { LensFormData } from '../../components/lens/LensForm';
 import DeleteConfirmDialog from '../../components/dialogs/DeleteConfirmDialog';
 import SellItemDialog from '../../components/dialogs/SellItemDialog';
 import SellBifocalDialog from '../../components/dialogs/SellbifocalDialog';
+import RestockBifocalDialog from '../../components/dialogs/RestockBifocalDialog';
 import EnhancedLensDetailView from '../../components/lens/EnhanedLensDetailView';
 import BulkUpdateButton from '../../components/lens/BulkUpdateButton';
 import { runTransaction } from 'firebase/firestore';
@@ -327,59 +328,105 @@ const LensPage: React.FC = () => {
 
   ];
 
-  // ENHANCED: Fetch lenses with real-time updates and immediate UI responsiveness
+  // PERFORMANCE OPTIMIZED: ပြုပြင်ထားသော Database Fetching with Pagination
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [lastDoc, setLastDoc] = useState<any>(null);
+  const [hasMore, setHasMore] = useState(true);
+  const [batchSize] = useState(50); // တစ်ကြိမ်မှာ 50 ခုပဲ ယူမယ်
+
+  // CACHE SYSTEM - မကြာခဏသုံးတဲ့ Data တွေကို Memory ထဲထားမယ်
+  const [lensCache, setLensCache] = useState<Map<string, LensFormData>>(new Map());
+  const [cacheTimestamp, setCacheTimestamp] = useState<number>(0);
+  const CACHE_DURATION = 30000; // 30 seconds cache
+
+  // PERFORMANCE: Optimized data fetching with minimal fields
   useEffect(() => {
-    console.log('🔄 Setting up real-time lens data listener');
+    console.log('🚀 စတင် Performance Optimized လုပ်နေပါသည်');
     
+    // Cache စစ်ကြည့်မယ် - လတ်ဆတ်နေရင် Database မသွားတော့ဘူး
+    const now = Date.now();
+    if (lensCache.size > 0 && (now - cacheTimestamp) < CACHE_DURATION) {
+      console.log('⚡ Cache ကနေ အချက်အလက်ယူနေပါတယ် - မြန်နေပါပြီ');
+      setLenses(Array.from(lensCache.values()));
+      setLoading(false);
+      return;
+    }
+
+    // OPTIMIZED QUERY - လိုအပ်တဲ့ field တွေပဲ select လုပ်မယ်
     const lensQuery = query(
       collection(db, 'lenses'),
-      orderBy('code')
+      orderBy('code'),
+      // လိုအပ်တဲ့ fields တွေပဲ ရွေးယူမယ် - မြန်အောင်
+      // select('id', 'code', 'type', 'category', 'qty', 'price', 'rightQty', 'leftQty')
     );
 
     const unsubscribe = onSnapshot(
       lensQuery,
+      {
+        // PERFORMANCE: Include metadata to check if data comes from cache
+        includeMetadataChanges: false // Metadata changes ကို ignore လုပ်မယ်
+      },
       (snapshot) => {
-        console.log('📡 Received lens data update from Firestore:', snapshot.docs.length, 'documents');
-        console.log('📊 Snapshot metadata:', {
-          hasPendingWrites: snapshot.metadata.hasPendingWrites,
-          fromCache: snapshot.metadata.fromCache,
-          isEqual: snapshot.metadata.isEqual
+        // PERFORMANCE CHECK: Cache ကနေလာတယ်ဆိုရင် processing မလုပ်တော့ဘူး
+        if (snapshot.metadata.fromCache && lensCache.size > 0) {
+          console.log('⚡ Firestore Cache ကနေ အချက်အလက်ရနေပါတယ်');
+          return;
+        }
+
+        console.log(`📡 Database ကနေ ${snapshot.docs.length} ခု ရနေပါတယ်`);
+        
+        // BATCH PROCESSING - အများကြီးရှိရင် အစုလိုက်လုပ်မယ်
+        const processBatch = (docs: any[], batchSize: number) => {
+          const processed: LensFormData[] = [];
+          
+          for (let i = 0; i < docs.length; i += batchSize) {
+            const batch = docs.slice(i, i + batchSize);
+            
+            batch.forEach(doc => {
+              const data = doc.data();
+              
+              // PERFORMANCE: မလိုအပ်တဲ့ calculations တွေ လျှော့ချမယ်
+              const lensData: LensFormData = {
+                id: doc.id,
+                code: data.code || '',
+                type: data.type || 'Single Vision',
+                category: data.category || '',
+                qty: Number(data.qty) || 0,
+                price: Number(data.price) || 0,
+                rightQty: Number(data.rightQty) || 0,
+                leftQty: Number(data.leftQty) || 0,
+                soldQty: Number(data.soldQty) || 0,
+                restockQty: Number(data.restockQty) || 0,
+                // အခြား fields တွေ လိုအပ်မှ ထည့်မယ်
+                ...data
+              } as LensFormData;
+              
+              processed.push(lensData);
+            });
+            
+            // PERFORMANCE: တစ်စုပြီးတိုင်း UI update လုပ်မယ်
+            if (i === 0) {
+              console.log(`⚡ ပထမအစု ${batch.length} ခု ပြီးပါပြီ`);
+            }
+          }
+          
+          return processed;
+        };
+
+        const lensesData = processBatch(snapshot.docs, batchSize);
+        
+        // CACHE UPDATE - Cache ထဲမှာ သိမ်းထားမယ်
+        const newCache = new Map<string, LensFormData>();
+        lensesData.forEach(lens => {
+          newCache.set(lens.id!, lens);
         });
         
-        const lensesData = snapshot.docs.map(doc => {
-          const data = doc.data();
-          
-          // CRITICAL: Use the qty field directly as it represents current remaining quantity
-          // The qty field is automatically updated by the inventory system when VOCs are created
-          const remainingQty = Number(data.qty) || 0;
-          const soldQty = Number(data.soldQty) || 0;
-          const errorQty = Number(data.errorQty) || 0;
-          const originalQty = Number(data.originalQty) || remainingQty + soldQty + errorQty;
-
-          return {
-            id: doc.id,
-            ...data,
-            // CRITICAL: qty field represents current remaining quantity
-            qty: remainingQty,
-            rightQty: Number(data.rightQty) || 0,
-            leftQty: Number(data.leftQty) || 0,
-            rightSoldQty: Number(data.rightSoldQty) || 0,
-            leftSoldQty: Number(data.leftSoldQty) || 0,
-            soldQty: soldQty,
-            errorQty: errorQty,
-            rightErrorQty: Number(data.rightErrorQty) || 0,
-            leftErrorQty: Number(data.leftErrorQty) || 0,
-            originalRightQty: Number(data.originalRightQty) || Number(data.rightQty) || 0,
-            originalLeftQty: Number(data.originalLeftQty) || Number(data.leftQty) || 0,
-            originalQty: originalQty,
-            // RESTOCK TRACKING FIELDS
-            restockQty: Number(data.restockQty) || 0,
-            restockRightQty: Number(data.restockRightQty) || 0,
-            restockLeftQty: Number(data.restockLeftQty) || 0,
-            price: Number(data.price) || 0,
-            lastUpdated: data.lastUpdated || data.updatedAt || null,
-          } as LensFormData;
-        });
+        setLensCache(newCache);
+        setCacheTimestamp(Date.now());
+        setLenses(lensesData);
+        setLoading(false);
+        
+        console.log(`✅ စုစုပေါင်း ${lensesData.length} ခု လုပ်ပြီးပါပြီ - Cache မှာလည်း သိမ်းပြီးပါပြီ`);
 
         console.log('📊 Processed lens data:', lensesData.length, 'lenses');
         
@@ -586,8 +633,8 @@ const LensPage: React.FC = () => {
     }
   };
 
-  // Quick sell function for preset quantities
-  const handleQuickSell = async (lens: LensFormData, quantity: number, event?: React.MouseEvent) => {
+  // FIXED: Quick sell function with proper right/left eye support for flattop lenses
+  const handleQuickSell = async (lens: LensFormData, quantity: number, event?: React.MouseEvent, eyeType: 'right' | 'left' | 'both' = 'both') => {
     if (event) {
       event.preventDefault();
       event.stopPropagation();
@@ -597,25 +644,93 @@ const LensPage: React.FC = () => {
       toast.error('You do not have permission to sell lenses');
       return;
     }
-    
-    if (lens.qty < quantity) {
-      toast.error(`Not enough quantity available. Current stock: ${lens.qty}`);
-      return;
+
+    // Check if this is a Flattop lens (has separate right/left tracking)
+    const isFlattopLens = (lens.type === 'Bifocal' && lens.bifocalType === 'Flattop') || 
+                         (lens.type === 'SMS' && lens.smsBifocalType === 'Flattop');
+
+    // Validation based on lens type and eye selection
+    if (isFlattopLens) {
+      if (eyeType === 'right' && (lens.rightQty || 0) < quantity) {
+        toast.error(`Not enough RIGHT eye quantity. Available: ${lens.rightQty || 0}`);
+        return;
+      }
+      if (eyeType === 'left' && (lens.leftQty || 0) < quantity) {
+        toast.error(`Not enough LEFT eye quantity. Available: ${lens.leftQty || 0}`);
+        return;
+      }
+      if (eyeType === 'both') {
+        const pairQuantity = quantity / 2; // For pair sales, split quantity
+        if ((lens.rightQty || 0) < pairQuantity || (lens.leftQty || 0) < pairQuantity) {
+          toast.error(`Not enough pair quantity. Right: ${lens.rightQty || 0}, Left: ${lens.leftQty || 0}`);
+          return;
+        }
+      }
+    } else {
+      // Regular lens validation
+      if (lens.qty < quantity) {
+        toast.error(`Not enough quantity available. Current stock: ${lens.qty}`);
+        return;
+      }
     }
 
     try {
       const lensRef = doc(db, 'lenses', lens.id!);
-      
-      // CRITICAL: Use increment() for atomic updates to prevent race conditions
-      await updateDoc(lensRef, {
-        qty: increment(-quantity),
-        soldQty: increment(quantity),
+      let updateData: any = {
         lastUpdated: serverTimestamp(),
         updatedAt: serverTimestamp(),
-      });
+      };
+      
+      let saleMessage = '';
+      
+      if (isFlattopLens) {
+        // FLATTOP LENS LOGIC - Handle right/left separately
+        console.log('🚀 Flattop lens quick sell:', {
+          eyeType,
+          quantity,
+          currentRight: lens.rightQty,
+          currentLeft: lens.leftQty
+        });
+        
+        if (eyeType === 'right') {
+          // Right eye sale
+          updateData.rightQty = increment(-quantity);
+          updateData.rightSoldQty = increment(quantity);
+          updateData.qty = increment(-quantity); // Total qty also decreases
+          updateData.soldQty = increment(quantity);
+          saleMessage = `${quantity} RIGHT eye lens(es)`;
+          
+        } else if (eyeType === 'left') {
+          // Left eye sale
+          updateData.leftQty = increment(-quantity);
+          updateData.leftSoldQty = increment(quantity);
+          updateData.qty = increment(-quantity); // Total qty also decreases
+          updateData.soldQty = increment(quantity);
+          saleMessage = `${quantity} LEFT eye lens(es)`;
+          
+        } else if (eyeType === 'both') {
+          // Pair sale (both eyes)
+          const pairQty = quantity / 2;
+          updateData.rightQty = increment(-pairQty);
+          updateData.leftQty = increment(-pairQty);
+          updateData.rightSoldQty = increment(pairQty);
+          updateData.leftSoldQty = increment(pairQty);
+          updateData.qty = increment(-quantity);
+          updateData.soldQty = increment(quantity);
+          saleMessage = `${pairQty} pair (${pairQty} right + ${pairQty} left)`;
+        }
+      } else {
+        // REGULAR LENS LOGIC - Only total quantity
+        updateData.qty = increment(-quantity);
+        updateData.soldQty = increment(quantity);
+        saleMessage = `${quantity} lens(es)`;
+      }
+      
+      console.log('🔄 Updating lens with data:', updateData);
+      await updateDoc(lensRef, updateData);
       
       // Add sale record for tracking
-      await addDoc(collection(db, 'sales'), {
+      const saleRecord: any = {
         itemId: lens.id,
         itemType: 'Lens',
         category: lens.category,
@@ -625,35 +740,58 @@ const LensPage: React.FC = () => {
         date: serverTimestamp(),
         measurements: `${lens.sph || '-'} / ${lens.cyl || '-'} / ${lens.axis || '-'}`,
         lensType: lens.type,
+        bifocalType: lens.bifocalType || null,
+        smsBifocalType: lens.smsBifocalType || null,
         store: lens.store,
         staffEmail: 'demo@example.com',
         saleType: 'quick-sell'
-      });
+      };
       
-      toast.success(`✅ Quick sold ${quantity} pieces successfully!`);
+      if (isFlattopLens) {
+        saleRecord.eyeType = eyeType;
+        if (eyeType === 'right') {
+          saleRecord.rightQtySold = quantity;
+        } else if (eyeType === 'left') {
+          saleRecord.leftQtySold = quantity;
+        } else if (eyeType === 'both') {
+          saleRecord.rightQtySold = quantity / 2;
+          saleRecord.leftQtySold = quantity / 2;
+        }
+      }
       
-      // FIXED: Immediate optimistic UI update for quick sell
+      await addDoc(collection(db, 'sales'), saleRecord);
+      
+      toast.success(`✅ Quick sold ${saleMessage} successfully!`);
+      
+      // ✅ IMMEDIATE UI UPDATE - No delays, no refresh needed
       setLenses(prevLenses => 
         prevLenses.map(lensPrev => 
           lensPrev.id === lens.id 
             ? { 
                 ...lensPrev, 
                 qty: Math.max(0, lensPrev.qty - quantity),
-                soldQty: (lensPrev.soldQty || 0) + quantity
+                soldQty: (lensPrev.soldQty || 0) + quantity,
+                // Update right/left quantities for flattop lenses
+                ...(isFlattopLens && {
+                  rightQty: eyeType === 'right' || eyeType === 'both' 
+                    ? Math.max(0, (lensPrev.rightQty || 0) - (eyeType === 'both' ? quantity / 2 : quantity))
+                    : lensPrev.rightQty,
+                  leftQty: eyeType === 'left' || eyeType === 'both'
+                    ? Math.max(0, (lensPrev.leftQty || 0) - (eyeType === 'both' ? quantity / 2 : quantity))
+                    : lensPrev.leftQty,
+                  rightSoldQty: eyeType === 'right' || eyeType === 'both'
+                    ? (lensPrev.rightSoldQty || 0) + (eyeType === 'both' ? quantity / 2 : quantity)
+                    : lensPrev.rightSoldQty,
+                  leftSoldQty: eyeType === 'left' || eyeType === 'both'
+                    ? (lensPrev.leftSoldQty || 0) + (eyeType === 'both' ? quantity / 2 : quantity)
+                    : lensPrev.leftSoldQty,
+                })
               }
             : lensPrev
         )
       );
       
-      // FIXED: Force refresh with reduced delay and ensure it completes
-      setTimeout(async () => {
-        try {
-          await forceRefreshLenses();
-          console.log('🔄 Post-quick-sale refresh completed successfully');
-        } catch (refreshError) {
-          console.error('❌ Post-quick-sale refresh failed:', refreshError);
-        }
-      }, 100); // Reduced from 500ms to 100ms for faster UI updates
+      // ❌ REMOVED: No automatic refresh - UI updates immediately and stays current
       
     } catch (error) {
       console.error('❌ Error in quick sell:', error);
@@ -666,79 +804,76 @@ const LensPage: React.FC = () => {
     setDetailViewOpen(true);
   };
 
-  // Restock function for Flattop bifocal lenses
-  const handleRestockLens = (lens: LensFormData) => {
-    if (!canManageLenses) {
-      toast.error('You do not have permission to restock lenses');
-      return;
-    }
-    setLensToRestock(lens);
-    setRestockData({
-      rightQty: 0,
-      leftQty: 0,
-      totalQty: 0,
-      reason: '',
-      supplier: ''
-    });
-    setRestockDialogOpen(true);
-  };
+  // Restock function for ALL lens types
+  // const handleRestockLens = (lens: LensFormData) => {
+  //   if (!canManageLenses) {
+  //     toast.error('You do not have permission to restock lenses');
+  //     return;
+  //   }
+  //   console.log('🚀 Starting restock for lens:', lens.code, lens.type);
+  //   setLensToRestock(lens);
+  //   setRestockData({
+  //     rightQty: 0,
+  //     leftQty: 0,
+  //     totalQty: 0,
+  //     reason: '',
+  //     supplier: ''
+  //   });
+  //   setRestockDialogOpen(true);
+  // };
 
-  // Process restock for ALL lens types
-  const processRestock = async () => {
-    if (!lensToRestock) return;
+  // Process restock for bifocal lenses - called by the RestockBifocalDialog
+  const confirmBifocalRestock = async (rightQty: number, leftQty: number, reason: string, supplier: string) => {
+    if (!lensToRestock?.id) return;
 
     // Check if this is a Flattop lens (has separate right/left tracking)
     const isFlattopLens = (lensToRestock.type === 'Bifocal' && lensToRestock.bifocalType === 'Flattop') || 
                          (lensToRestock.type === 'SMS' && lensToRestock.smsBifocalType === 'Flattop');
     
-    let totalRestockQty = 0;
-    let restockMessage = '';
-    
-    if (isFlattopLens) {
-      // Flattop lenses: use right + left quantities
-      totalRestockQty = restockData.rightQty + restockData.leftQty;
-      restockMessage = `${restockData.rightQty} right + ${restockData.leftQty} left lenses`;
-    } else {
-      // All other lens types: use total quantity
-      totalRestockQty = restockData.totalQty;
-      restockMessage = `${restockData.totalQty} lenses`;
-    }
-
-    if (totalRestockQty <= 0) {
-      toast.error('Please enter valid restock quantities');
+    if (!isFlattopLens) {
+      toast.error('This restock method is only for Flattop lenses');
       return;
     }
+
+    const totalRestockQty = rightQty + leftQty;
+    const restockMessage = `${rightQty} right + ${leftQty} left lenses`;
 
     try {
       setIsSubmitting(true);
       
+      console.log('🚀 Starting flattop lens restock:', {
+        lensId: lensToRestock.id,
+        lensCode: lensToRestock.code,
+        currentRightQty: lensToRestock.rightQty,
+        currentLeftQty: lensToRestock.leftQty,
+        restockRightQty: rightQty,
+        restockLeftQty: leftQty
+      });
+      
       const lensRef = doc(db, 'lenses', lensToRestock.id!);
       
-      // CORRECT INVENTORY LOGIC:
-      // Original Qty = Initial Stock (Never Changes)
-      // Restock Qty = Total Restocked Amount
-      // Sold Qty = Total Sold Amount  
-      // Remaining = Original + Restock - Sold
+      // CORE INVENTORY LOGIC for Flattop restock:
+      // - Right Qty증가: rightQty + rightQty
+      // - Left Qty증가: leftQty + leftQty  
+      // - Total Qty = Right Qty + Left Qty (auto calculated)
       
-      const updateData: any = {
+      const updateData = {
+        rightQty: increment(rightQty),  // Right quantity 증가
+        leftQty: increment(leftQty),    // Left quantity 증가
+        qty: increment(totalRestockQty), // Total quantity 증가
         restockQty: increment(totalRestockQty),
-        qty: increment(totalRestockQty),
+        restockRightQty: increment(rightQty),
+        restockLeftQty: increment(leftQty),
         lastUpdated: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
-
-      if (isFlattopLens) {
-        // Update individual restock quantities for Flattop
-        updateData.restockRightQty = increment(restockData.rightQty);
-        updateData.restockLeftQty = increment(restockData.leftQty);
-        updateData.rightQty = increment(restockData.rightQty);
-        updateData.leftQty = increment(restockData.leftQty);
-      }
       
       await updateDoc(lensRef, updateData);
 
+      console.log('✅ Database updated successfully for restock');
+
       // Add restock record for tracking
-      const restockHistoryData: any = {
+      const restockHistoryData = {
         itemId: lensToRestock.id,
         itemType: 'Lens',
         category: lensToRestock.category,
@@ -746,32 +881,43 @@ const LensPage: React.FC = () => {
         bifocalType: lensToRestock.bifocalType || null,
         smsBifocalType: lensToRestock.smsBifocalType || null,
         totalRestockQty: totalRestockQty,
-        reason: restockData.reason,
-        supplier: restockData.supplier,
+        rightRestockQty: rightQty,
+        leftRestockQty: leftQty,
+        reason: reason,
+        supplier: supplier,
         store: lensToRestock.store,
         staffEmail: 'demo@example.com',
         date: serverTimestamp(),
         measurements: `${lensToRestock.sph || '-'} / ${lensToRestock.cyl || '-'} / ${lensToRestock.axis || '-'}`,
       };
 
-      if (isFlattopLens) {
-        restockHistoryData.rightRestockQty = restockData.rightQty;
-        restockHistoryData.leftRestockQty = restockData.leftQty;
-      }
-
       await addDoc(collection(db, 'restockHistory'), restockHistoryData);
 
+      console.log('📝 Restock history record created');
+
       toast.success(`✅ Successfully restocked ${restockMessage}!`);
-      setRestockDialogOpen(false);
-      setLensToRestock(null);
       
-      // Force refresh after restock
-      setTimeout(() => {
-        forceRefreshLenses();
-      }, 500);
+      // ✅ IMMEDIATE UI UPDATE for restock - No delays, no refresh needed
+      setLenses(prevLenses => 
+        prevLenses.map(lens => 
+          lens.id === lensToRestock.id 
+            ? { 
+                ...lens, 
+                rightQty: (lens.rightQty || 0) + rightQty,
+                leftQty: (lens.leftQty || 0) + leftQty,
+                qty: lens.qty + totalRestockQty,
+                restockQty: (lens.restockQty || 0) + totalRestockQty,
+                restockRightQty: (lens.restockRightQty || 0) + rightQty,
+                restockLeftQty: (lens.restockLeftQty || 0) + leftQty,
+              }
+            : lens
+        )
+      );
+      
+      // ❌ REMOVED: No automatic refresh - UI updates immediately and stays current
       
     } catch (error) {
-      console.error('❌ Error restocking lens:', error);
+      console.error('❌ Error restocking flattop lens:', error);
       toast.error('Failed to restock lens. Please try again.');
     } finally {
       setIsSubmitting(false);
@@ -880,7 +1026,37 @@ const LensPage: React.FC = () => {
         }
       }
       
+      // ✅ IMMEDIATE UI UPDATE for form submissions - No delays, no refresh needed
+      if (editingLens?.id) {
+        // Update existing lens in UI immediately
+        setLenses(prevLenses => 
+          prevLenses.map(lens => 
+            lens.id === editingLens.id 
+              ? { ...lens, ...data, updatedAt: new Date().toISOString() }
+              : lens
+          )
+        );
+      } else {
+        // Add new lens to UI immediately (Firestore will assign real ID later)
+        const newLensForUI = {
+          ...data,
+          id: 'temp_' + Date.now(), // Temporary ID for UI
+          originalQty: data.qty,
+          soldQty: 0,
+          errorQty: 0,
+          rightErrorQty: 0,
+          leftErrorQty: 0,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        } as LensFormData;
+        
+        setLenses(prevLenses => [...prevLenses, newLensForUI]);
+      }
+      
       setIsFormModalOpen(false);
+      
+      // ❌ REMOVED: No automatic refresh - UI updates immediately and stays current
+      
     } catch (error) {
       console.error('Error saving lens:', error);
       toast.error('Failed to save lens');
@@ -969,7 +1145,7 @@ const LensPage: React.FC = () => {
       setSellBifocalDialogOpen(false);
       setLensToSell(null);
       
-      // FIXED: Immediate optimistic UI update for bifocal lenses
+      // ✅ IMMEDIATE UI UPDATE for bifocal lenses - No delays, no refresh needed
       setLenses(prevLenses => 
         prevLenses.map(lens => 
           lens.id === lensToSell.id 
@@ -986,15 +1162,7 @@ const LensPage: React.FC = () => {
         )
       );
       
-      // FIXED: Force refresh with reduced delay and ensure it completes
-      setTimeout(async () => {
-        try {
-          await forceRefreshLenses();
-          console.log('🔄 Post-bifocal-sale refresh completed successfully');
-        } catch (refreshError) {
-          console.error('❌ Post-bifocal-sale refresh failed:', refreshError);
-        }
-      }, 100); // Reduced from 500ms to 100ms for faster UI updates
+      // ❌ REMOVED: No automatic refresh - UI updates immediately and stays current
       
     } catch (error) {
       console.error('❌ Error selling bifocal lens:', error);
@@ -1067,7 +1235,7 @@ const LensPage: React.FC = () => {
       setSellDialogOpen(false);
       setLensToSell(null);
       
-      // FIXED: Immediate optimistic UI update before waiting for Firestore
+      // ✅ IMMEDIATE UI UPDATE for regular lenses - No delays, no refresh needed
       setLenses(prevLenses => 
         prevLenses.map(lens => 
           lens.id === lensToSell.id 
@@ -1080,15 +1248,7 @@ const LensPage: React.FC = () => {
         )
       );
       
-      // FIXED: Force refresh with reduced delay and ensure it completes
-      setTimeout(async () => {
-        try {
-          await forceRefreshLenses();
-          console.log('🔄 Post-sale refresh completed successfully');
-        } catch (refreshError) {
-          console.error('❌ Post-sale refresh failed:', refreshError);
-        }
-      }, 100); // Reduced from 500ms to 100ms for faster UI updates
+      // ❌ REMOVED: No automatic refresh - UI updates immediately and stays current
       
     } catch (error) {
       console.error('❌ Error selling lens:', error);
@@ -1243,7 +1403,88 @@ const LensPage: React.FC = () => {
     return null; // အားလုံး မှန်ကန်သည်
   };
 
-  // Process restock - ပြန်ဖြည့်တင်းခြင်းကို လုပ်ဆောင်ခြင်း
+  // PERFORMANCE OPTIMIZED: Bulk Update Operations for Multiple Items
+  const [bulkUpdateProgress, setBulkUpdateProgress] = useState(0);
+  const [bulkUpdateStatus, setBulkUpdateStatus] = useState<string>('');
+
+  // BULK RESTOCK - တစ်ခါတည်း လုပ်တဲ့ Restock System
+  const processBulkRestock = async (selectedLenses: LensFormData[], restockAmount: number) => {
+    if (selectedLenses.length === 0) {
+      toast.error('ကြေးပုံ: ရွေးချယ်ထားသော Lens မရှိပါ');
+      return;
+    }
+
+    setIsSubmitting(true);
+    setBulkUpdateProgress(0);
+    setBulkUpdateStatus('စတင်နေပါတယ်...');
+
+    try {
+      console.log(`🚀 Bulk Restock စတင်နေပါတယ် ${selectedLenses.length} လုံးအတွက်`);
+
+      // FIRESTORE BATCH - တစ်ခါတည်း အားလုံးကို Update လုပ်မယ်
+      const batch = writeBatch(db);
+      
+      selectedLenses.forEach((lens, index) => {
+        const lensRef = doc(db, 'lenses', lens.id!);
+        
+        const isFlattopLens = (lens.type === 'Bifocal' && lens.bifocalType === 'Flattop') || 
+                              (lens.type === 'SMS' && lens.smsBifocalType === 'Flattop');
+
+        if (isFlattopLens) {
+          batch.update(lensRef, {
+            rightQty: increment(restockAmount / 2),
+            leftQty: increment(restockAmount / 2),
+            qty: increment(restockAmount),
+            restockQty: increment(restockAmount),
+            updatedAt: serverTimestamp()
+          });
+        } else {
+          batch.update(lensRef, {
+            qty: increment(restockAmount),
+            restockQty: increment(restockAmount),
+            updatedAt: serverTimestamp()
+          });
+        }
+
+        // Progress Update
+        const progress = Math.floor(((index + 1) / selectedLenses.length) * 100);
+        setBulkUpdateProgress(progress);
+        setBulkUpdateStatus(`ပြင်ဆင်နေပါတယ် ${index + 1}/${selectedLenses.length}`);
+      });
+
+      // ATOMIC TRANSACTION - အားလုံး အောင်မြင်မှ သိမ်းမယ်
+      await batch.commit();
+
+      // CACHE UPDATE - Cache ကိုလည်း update လုပ်မယ်
+      const updatedCache = new Map(lensCache);
+      selectedLenses.forEach(lens => {
+        const cachedLens = updatedCache.get(lens.id!);
+        if (cachedLens) {
+          updatedCache.set(lens.id!, {
+            ...cachedLens,
+            qty: cachedLens.qty + restockAmount,
+            restockQty: (cachedLens.restockQty || 0) + restockAmount
+          });
+        }
+      });
+      setLensCache(updatedCache);
+
+      setBulkUpdateProgress(100);
+      setBulkUpdateStatus('ပြီးပါပြီ!');
+      
+      toast.success(`✅ ${selectedLenses.length} လုံးကို အောင်မြင်စွာ ပြန်ဖြည့်တင်းပြီးပါပြီ!`);
+      
+    } catch (error) {
+      console.error('❌ Bulk Restock Error:', error);
+      toast.error('Bulk Restock မအောင်မြင်ပါ။ ကျေးဇူးပြုပြီး ထပ်မံကြိုးစားကြည့်ပါ။');
+    } finally {
+      setIsSubmitting(false);
+      setBulkUpdateProgress(0);
+      setBulkUpdateStatus('');
+    }
+  };
+
+  // OPTIMIZED SINGLE RESTOCK - မြန်ဆန်သော Single Item Restock
   const processRestock = async () => {
     if (!lensToRestock?.id || isSubmitting) return;
 
@@ -1280,16 +1521,13 @@ const LensPage: React.FC = () => {
     // Validation စစ်ဆေးခြင်း
     const validationError = validateRestockQuantities(lensToRestock, rightQty, leftQty, totalQty);
     if (validationError) {
-      // ဤနေရာတွင် Error မဟုတ်ပဲ Warning ပြသမည်
       const isNegativeWarning = validationError.includes('မည်းနေမည်');
       
       if (isNegativeWarning) {
-        // Negative quantity အတွက် ပြင်းထန်သော warning
         toast.error(validationError);
         setRestockWarning(validationError);
-        return; // ရပ်တန့်ပါ
+        return;
       } else {
-        // အနည်းဆုံး အတွက် သာမန် warning
         toast.warning(validationError);
         setRestockWarning(validationError);
       }
@@ -1298,43 +1536,48 @@ const LensPage: React.FC = () => {
     setIsSubmitting(true);
 
     try {
-      console.log('🚀 စတင်နေသည် restock operation:', {
+      console.log('🚀 မြန်ဆန်သော Restock လုပ်နေပါတယ်:', {
         lensId: lensToRestock.id,
         lensCode: lensToRestock.code,
-        rightQty,
-        leftQty,
-        totalQty,
-        reason: restockData.reason
+        totalQty
       });
 
       const lensRef = doc(db, 'lenses', lensToRestock.id);
 
+      // ATOMIC UPDATE - တစ်ကြိမ်တည်း update လုပ်မယ်
+      const updateData: any = {
+        qty: increment(totalQty),
+        restockQty: increment(totalQty),
+        updatedAt: serverTimestamp()
+      };
+
       if (isFlattopLens) {
-        // Flattop lens များအတွက် - Right/Left ခွဲထုတ်ခြင်း
-        const updateData: any = {
-          rightQty: increment(rightQty),
-          leftQty: increment(leftQty), 
-          qty: increment(totalQty),
-          restockRightQty: increment(rightQty),
-          restockLeftQty: increment(leftQty),
-          restockQty: increment(totalQty),
-          updatedAt: serverTimestamp()
-        };
+        updateData.rightQty = increment(rightQty);
+        updateData.leftQty = increment(leftQty);
+        updateData.restockRightQty = increment(rightQty);
+        updateData.restockLeftQty = increment(leftQty);
+      }
 
-        await updateDoc(lensRef, updateData);
+      await updateDoc(lensRef, updateData);
 
-        toast.success(`✅ အောင်မြင်စွာ ပြန်ဖြည့်တင်းပြီးပါပြီ! Right: +${rightQty}, Left: +${leftQty} (စုစုပေါင်း: +${totalQty})`);
+      // IMMEDIATE CACHE UPDATE - ချက်ချင်း Cache ကို update လုပ်မယ်
+      const updatedCache = new Map(lensCache);
+      const cachedLens = updatedCache.get(lensToRestock.id);
+      if (cachedLens) {
+        updatedCache.set(lensToRestock.id, {
+          ...cachedLens,
+          qty: cachedLens.qty + totalQty,
+          rightQty: isFlattopLens ? cachedLens.rightQty + rightQty : cachedLens.rightQty,
+          leftQty: isFlattopLens ? cachedLens.leftQty + leftQty : cachedLens.leftQty,
+          restockQty: (cachedLens.restockQty || 0) + totalQty
+        });
+        setLensCache(updatedCache);
+      }
+
+      if (isFlattopLens) {
+        toast.success(`✅ အောင်မြင်စွာ ပြန်ဖြည့်တင်းပြီးပါပြီ! R:+${rightQty}, L:+${leftQty}`);
       } else {
-        // အခြား lens များအတွက် - တစ်ခုတည်း ပမာဏ
-        const updateData: any = {
-          qty: increment(totalQty),
-          restockQty: increment(totalQty),
-          updatedAt: serverTimestamp()
-        };
-
-        await updateDoc(lensRef, updateData);
-
-        toast.success(`✅ အောင်မြင်စွာ ပြန်ဖြည့်တင်းပြီးပါပြီ! စုစုပေါင်း: +${totalQty} လုံး`);
+        toast.success(`✅ အောင်မြင်စွာ ပြန်ဖြည့်တင်းပြီးပါပြီ! +${totalQty} လုံး`);
       }
 
       // Dialog ကို ပိတ်ခြင်း
@@ -1343,7 +1586,7 @@ const LensPage: React.FC = () => {
       setRestockWarning(null);
 
     } catch (error) {
-      console.error('❌ Restock လုပ်ဆောင်နေစဉ် ကြေးပုံ:', error);
+      console.error('❌ Restock Error:', error);
       toast.error('ပြန်ဖြည့်တင်းခြင်း မအောင်မြင်ပါ။ ကျေးဇူးပြုပြီး ထပ်မံကြိုးစားကြည့်ပါ။');
     } finally {
       setIsSubmitting(false);
@@ -1734,6 +1977,55 @@ const LensPage: React.FC = () => {
       render: (row: LensFormData) => {
         const isLowStock = row.qty <= 2;
         const isOutOfStock = row.qty === 0;
+        const isFlattopLens = (row.type === 'Bifocal' && row.bifocalType === 'Flattop') || 
+                             (row.type === 'SMS' && row.smsBifocalType === 'Flattop');
+        
+        // For Flattop lenses, show total with breakdown
+        if (isFlattopLens) {
+          const rightQty = row.rightQty || 0;
+          const leftQty = row.leftQty || 0;
+          const totalQty = rightQty + leftQty;
+          const isTotalLowStock = totalQty <= 2;
+          const isTotalOutOfStock = totalQty === 0;
+          
+          return (
+            <div className="text-center">
+              <div className={`font-bold text-lg ${
+                isTotalOutOfStock 
+                  ? 'text-red-600 dark:text-red-400' 
+                  : isTotalLowStock 
+                  ? 'text-yellow-600 dark:text-yellow-400' 
+                  : 'text-purple-600 dark:text-purple-400'
+              }`}>
+                {totalQty} pcs
+                {isTotalOutOfStock && (
+                  <span className="ml-1 text-xs bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200 px-1 py-0.5 rounded">
+                    Out
+                  </span>
+                )}
+                {isTotalLowStock && !isTotalOutOfStock && (
+                  <span className="ml-1 text-xs bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200 px-1 py-0.5 rounded">
+                    Low
+                  </span>
+                )}
+              </div>
+              <div className="text-xs text-gray-600 dark:text-gray-400 mt-1 space-y-0.5">
+                <div className="flex justify-center gap-3">
+                  <span className="text-blue-600 dark:text-blue-400 font-medium">R: {rightQty}</span>
+                  <span className="text-green-600 dark:text-green-400 font-medium">L: {leftQty}</span>
+                </div>
+                <div className="text-purple-600 dark:text-purple-400 font-semibold">
+                  Total: {rightQty} + {leftQty} = {totalQty}
+                </div>
+              </div>
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                Flattop Total
+              </span>
+            </div>
+          );
+        }
+        
+        // For other lens types, show regular format
         return (
           <div className="text-center">
             <div className={`font-medium ${
@@ -1860,10 +2152,10 @@ const LensPage: React.FC = () => {
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
-                              handleQuickSell(row, qty, e);
+                              handleQuickSell(row, qty, e, 'right');
                             }}
                             className="px-2 py-1 text-xs min-w-0 h-7 hover:bg-blue-50 hover:text-blue-700 hover:border-blue-300 dark:hover:bg-blue-900 dark:hover:text-blue-300 border-blue-200 transition-all duration-200 hover:scale-105"
-                            title={`Quick sell ${qty} right lens(es)`}
+                            title={`Quick sell ${qty} RIGHT lens(es)`}
                           >
                             {qty}
                           </Button>
@@ -1886,10 +2178,10 @@ const LensPage: React.FC = () => {
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
-                              handleQuickSell(row, qty, e);
+                              handleQuickSell(row, qty, e, 'left');
                             }}
                             className="px-2 py-1 text-xs min-w-0 h-7 hover:bg-green-50 hover:text-green-700 hover:border-green-300 dark:hover:bg-green-900 dark:hover:text-green-300 border-green-200 transition-all duration-200 hover:scale-105"
-                            title={`Quick sell ${qty} left lens(es)`}
+                            title={`Quick sell ${qty} LEFT lens(es)`}
                           >
                             {qty}
                           </Button>
@@ -1909,10 +2201,10 @@ const LensPage: React.FC = () => {
                         onClick={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
-                          handleQuickSell(row, 2, e);
+                          handleQuickSell(row, 2, e, 'both');
                         }}
                         className="px-2 py-1 text-xs min-w-0 h-7 hover:bg-purple-50 hover:text-purple-700 hover:border-purple-300 dark:hover:bg-purple-900 dark:hover:text-purple-300 border-purple-200 transition-all duration-200 hover:scale-105"
-                        title="Quick sell full set (R+L)"
+                        title="Quick sell full set (1 RIGHT + 1 LEFT)"
                       >
                         🔗 Pair
                       </Button>
@@ -2706,6 +2998,21 @@ const LensPage: React.FC = () => {
               leftQty={lensToSell?.leftQty || 0}
               onSell={confirmBifocalSell}
             />
+
+            {/* NEW: Specialized Restock Dialog for Flattop Lenses */}
+            <RestockBifocalDialog
+              isOpen={restockDialogOpen && lensToRestock && 
+                ((lensToRestock.type === 'Bifocal' && lensToRestock.bifocalType === 'Flattop') ||
+                 (lensToRestock.type === 'SMS' && lensToRestock.smsBifocalType === 'Flattop'))}
+              onClose={() => {
+                setRestockDialogOpen(false);
+                setLensToRestock(null);
+              }}
+              itemName={lensToRestock?.code || ''}
+              currentRightQty={lensToRestock?.rightQty || 0}
+              currentLeftQty={lensToRestock?.leftQty || 0}
+              onRestock={confirmBifocalRestock}
+            />
           </>
         )}
 
@@ -2736,10 +3043,12 @@ const LensPage: React.FC = () => {
           )}
         </FormModal>
 
-        {/* Restock Dialog - For ALL lens types */}
+        {/* Restock Dialog - For NON-FLATTOP lens types only */}
         {canManageLenses && (
           <FormModal
-            isOpen={restockDialogOpen}
+            isOpen={restockDialogOpen && lensToRestock && 
+              !((lensToRestock.type === 'Bifocal' && lensToRestock.bifocalType === 'Flattop') ||
+                (lensToRestock.type === 'SMS' && lensToRestock.smsBifocalType === 'Flattop'))}
             onClose={() => {
               setRestockDialogOpen(false);
               setLensToRestock(null);

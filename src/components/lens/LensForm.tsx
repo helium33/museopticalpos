@@ -177,14 +177,23 @@ const LensForm: React.FC<LensFormProps> = ({ onSubmit, initialData, isSubmitting
         const roundedValue = roundToHalf(numValue);
         updated[field] = roundedValue;
         
-        // Auto-calculate total quantity for Flattop bifocal lenses and Yangon Order Multifocal
+        // Auto-calculate ORIGINAL quantities for Flattop bifocal lenses - rightQty/leftQty represent ORIGINAL stock
         if (field === 'rightQty' || field === 'leftQty') {
           if ((updated.type === 'Bifocal' && updated.bifocalType === 'Flattop') || 
               (updated.type === 'Error' && updated.bifocalType === 'Flattop') ||
               (updated.type === 'SMS' && updated.smsBifocalType === 'Flattop') ||
               (updated.type === 'Yangon Order' && updated.yangonOrderSubType === 'Bifocal' && updated.yangonOrderBifocalType === 'Flattop') ||
               (updated.type === 'Yangon Order' && updated.yangonOrderSubType === 'Multifocal')) {
-            updated.qty = roundToHalf((updated.rightQty || 0) + (updated.leftQty || 0));
+            
+            // For flattop lenses: rightQty and leftQty represent ORIGINAL quantities
+            updated.originalRightQty = updated.rightQty || 0;
+            updated.originalLeftQty = updated.leftQty || 0;
+            updated.originalQty = roundToHalf((updated.rightQty || 0) + (updated.leftQty || 0));
+            
+            // For NEW lenses, set remaining qty equal to original qty initially
+            if (!initialData) {
+              updated.qty = updated.originalQty; // Total remaining = Total original initially
+            }
           }
         }
       }
@@ -963,27 +972,18 @@ const LensForm: React.FC<LensFormProps> = ({ onSubmit, initialData, isSubmitting
                   value={formData.rightQty || 0}
                   onChange={(value) => {
                     updateField('rightQty', value);
-                    // If editing, update originalRightQty and total qty accordingly
-                    if (initialData) {
-                      const diff = value - (initialData.rightQty || 0);
-                      updateField('originalRightQty', (formData.originalRightQty || 0) + diff);
-                      updateField('originalQty', roundToHalf(((formData.originalRightQty || 0) + diff) + (formData.originalLeftQty || 0)));
-                    }
+                    // updateField automatically calculates qty and originalQty for flattop lenses
                   }}
-                  label={`Right Eye Quick Select ${formData.type === 'Error' ? '(Error Qty)' : formData.type === 'SMS' ? '(SMS Qty)' : ''}`}
+                  label={`Right Eye ORIGINAL Qty Quick Select ${formData.type === 'Error' ? '(Error Qty)' : formData.type === 'SMS' ? '(SMS Qty)' : ''}`}
                 />
                 <Input
-                  label={`Right Eye Quantity * ${formData.type === 'Error' ? '(Error Qty)' : formData.type === 'SMS' ? '(SMS Qty)' : ''}`}
+                  label={`Right Eye ORIGINAL Quantity * ${formData.type === 'Error' ? '(Error Qty)' : formData.type === 'SMS' ? '(SMS Qty)' : ''}`}
                   type="number"
                   value={formData.rightQty || 0}
                   onChange={(e) => {
                     const valueNum = parseFloat(e.target.value) || 0;
                     updateField('rightQty', valueNum);
-                    if (initialData) {
-                      const diff = valueNum - (initialData.rightQty || 0);
-                      updateField('originalRightQty', (formData.originalRightQty || 0) + diff);
-                      updateField('originalQty', roundToHalf(((formData.originalRightQty || 0) + diff) + (formData.originalLeftQty || 0)));
-                    }
+                    // updateField automatically calculates originalQty from rightQty + leftQty
                   }}
                   error={errors.rightQty}
                   min="0"
@@ -992,11 +992,13 @@ const LensForm: React.FC<LensFormProps> = ({ onSubmit, initialData, isSubmitting
                   placeholder="0.5, 1, 1.5, 2..."
                 />
                 <div className="text-sm text-blue-600 dark:text-blue-400">
+                  <strong>🔄 Auto-calculation:</strong> Right original + Left original = Total original quantity
+                  <br />
                   {formData.type === 'Error'
-                    ? 'Error pieces for right eye (will deduct from inventory)'
+                    ? 'Original error pieces for right eye'
                     : formData.type === 'SMS'
-                    ? 'SMS pieces for right eye (will deduct from inventory)'
-                    : 'Individual pieces for right eye (0.5 increments)'
+                    ? 'Original SMS pieces for right eye'
+                    : 'Original stock pieces for right eye (0.5 increments)'
                   }
                 </div>
               </div>
@@ -1006,26 +1008,18 @@ const LensForm: React.FC<LensFormProps> = ({ onSubmit, initialData, isSubmitting
                   value={formData.leftQty || 0}
                   onChange={(value) => {
                     updateField('leftQty', value);
-                    if (initialData) {
-                      const diff = value - (initialData.leftQty || 0);
-                      updateField('originalLeftQty', (formData.originalLeftQty || 0) + diff);
-                      updateField('originalQty', roundToHalf((formData.originalRightQty || 0) + ((formData.originalLeftQty || 0) + diff)));
-                    }
+                    // updateField automatically calculates originalQty from rightQty + leftQty
                   }}
-                  label={`Left Eye Quick Select ${formData.type === 'Error' ? '(Error Qty)' : formData.type === 'SMS' ? '(SMS Qty)' : ''}`}
+                  label={`Left Eye ORIGINAL Qty Quick Select ${formData.type === 'Error' ? '(Error Qty)' : formData.type === 'SMS' ? '(SMS Qty)' : ''}`}
                 />
                 <Input
-                  label={`Left Eye Quantity * ${formData.type === 'Error' ? '(Error Qty)' : formData.type === 'SMS' ? '(SMS Qty)' : ''}`}
+                  label={`Left Eye ORIGINAL Quantity * ${formData.type === 'Error' ? '(Error Qty)' : formData.type === 'SMS' ? '(SMS Qty)' : ''}`}
                   type="number"
                   value={formData.leftQty || 0}
                   onChange={(e) => {
                     const valueNum = parseFloat(e.target.value) || 0;
                     updateField('leftQty', valueNum);
-                    if (initialData) {
-                      const diff = valueNum - (initialData.leftQty || 0);
-                      updateField('originalLeftQty', (formData.originalLeftQty || 0) + diff);
-                      updateField('originalQty', roundToHalf((formData.originalRightQty || 0) + ((formData.originalLeftQty || 0) + diff)));
-                    }
+                    // updateField automatically calculates originalQty from rightQty + leftQty
                   }}
                   error={errors.leftQty}
                   min="0"
@@ -1034,33 +1028,40 @@ const LensForm: React.FC<LensFormProps> = ({ onSubmit, initialData, isSubmitting
                   placeholder="0.5, 1, 1.5, 2..."
                 />
                 <div className="text-sm text-green-600 dark:text-green-400">
+                  <strong>🔄 Auto-calculation:</strong> Right original + Left original = Total original quantity
+                  <br />
                   {formData.type === 'Error'
-                    ? 'Error pieces for left eye (will deduct from inventory)'
+                    ? 'Original error pieces for left eye'
                     : formData.type === 'SMS'
-                    ? 'SMS pieces for left eye (will deduct from inventory)'
-                    : 'Individual pieces for left eye (0.5 increments)'
+                    ? 'Original SMS pieces for left eye'
+                    : 'Original stock pieces for left eye (0.5 increments)'
                   }
                 </div>
               </div>
             </div>
 
-            {/* Total Quantity Display */}
-            <div className={`p-4 rounded-lg ${
+            {/* Total Quantity Display - READ-ONLY for Flattop lenses */}
+            <div className={`p-4 rounded-lg border-2 ${
               formData.type === 'Error'
-                ? 'bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800'
+                ? 'bg-red-50 dark:bg-red-900/20 border-red-300 dark:border-red-700'
                 : formData.type === 'SMS'
-                ? 'bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800'
+                ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-300 dark:border-blue-700'
                 : formData.type === 'Yangon Order'
-                ? 'bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800'
-                : 'bg-gray-50 dark:bg-gray-700'
+                ? 'bg-orange-50 dark:bg-orange-900/20 border-orange-300 dark:border-orange-700'
+                : 'bg-purple-50 dark:bg-purple-900/20 border-purple-300 dark:border-purple-700'
             }`}>
               <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                  {formData.type === 'Error' ? 'Total Error Quantity:' :
-                    formData.type === 'SMS' ? 'Total SMS Quantity:' :
-                    formData.type === 'Yangon Order' ? 'Total Yangon Order Quantity:' : 'Total Quantity:'}
-                </span>
-                <span className={`text-lg font-bold ${
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {formData.type === 'Error' ? 'Total ORIGINAL Error Quantity:' :
+                      formData.type === 'SMS' ? 'Total ORIGINAL SMS Quantity:' :
+                      formData.type === 'Yangon Order' ? 'Total ORIGINAL Yangon Order Quantity:' : 'Total ORIGINAL Quantity:'}
+                  </span>
+                  <span className="text-xs bg-purple-200 dark:bg-purple-600 text-purple-600 dark:text-purple-300 px-2 py-1 rounded-full">
+                    🔒 AUTO-CALCULATED
+                  </span>
+                </div>
+                <span className={`text-xl font-bold ${
                   formData.type === 'Error'
                     ? 'text-red-600 dark:text-red-400'
                     : formData.type === 'SMS'
@@ -1072,13 +1073,31 @@ const LensForm: React.FC<LensFormProps> = ({ onSubmit, initialData, isSubmitting
                   {roundToHalf((formData.rightQty || 0) + (formData.leftQty || 0))} pieces
                 </span>
               </div>
-              {initialData && (
-                <div className="mt-2 text-xs text-gray-600 dark:text-gray-400">
-                  <span>
-                    <strong>Note:</strong> Decreasing quantity will decrease both <b>total</b> and <b>remaining</b> pieces.
-                  </span>
-                </div>
-              )}
+              <div className="mt-3 flex items-center justify-center gap-4 text-sm font-medium">
+                <span className="text-blue-600 dark:text-blue-400">Right: {formData.rightQty || 0}</span>
+                <span className="text-gray-400">+</span>
+                <span className="text-green-600 dark:text-green-400">Left: {formData.leftQty || 0}</span>
+                <span className="text-gray-400">=</span>
+                <span className={`${
+                  formData.type === 'Error'
+                    ? 'text-red-600 dark:text-red-400'
+                    : formData.type === 'SMS'
+                    ? 'text-blue-600 dark:text-blue-400'
+                    : formData.type === 'Yangon Order'
+                    ? 'text-orange-600 dark:text-orange-400'
+                    : 'text-purple-600 dark:text-purple-400'
+                }`}>Total: {roundToHalf((formData.rightQty || 0) + (formData.leftQty || 0))}</span>
+              </div>
+              <div className="mt-2 text-xs text-center text-gray-600 dark:text-gray-400">
+                <span className="flex items-center justify-center gap-1">
+                  🔒 <strong>Auto-calculated ORIGINAL quantity:</strong> Right original + Left original = Total original quantity (READ-ONLY)
+                </span>
+              </div>
+              <div className="mt-2 text-xs text-center text-blue-600 dark:text-blue-400">
+                <span>
+                  💡 <strong>Note:</strong> This represents your original stock allocation. Remaining quantities (for sales tracking) are managed separately.
+                </span>
+              </div>
               {errors.qty && (
                 <div className="mt-2 text-sm text-red-600 dark:text-red-400 flex items-center gap-1">
                   <AlertCircle size={14} />
@@ -1141,39 +1160,26 @@ const LensForm: React.FC<LensFormProps> = ({ onSubmit, initialData, isSubmitting
                           👁️ Right Eye Inventory
                         </h5>
                         <div className="grid grid-cols-1 gap-4">
-                          {/* Right Total Qty */}
-                          {isAdmin ? (
-                            <IncrementDecrementField
-                              value={formData.originalRightQty || 0}
-                              onChange={(value) => {
-                                if (!isTotalQtyLocked) {
-                                  updateField('originalRightQty', value);
-                                  updateField('originalQty', roundToHalf(value + (formData.originalLeftQty || 0)));
-                                }
-                              }}
-                              label="Right Total Qty - ADMIN"
-                              min={0}
-                              helpText={`Right eye original stock. Sold: ${formData.rightSoldQty || 0} pcs`}
-                              variant="total"
-                              isLocked={isTotalQtyLocked}
-                              onToggleLock={() => setIsTotalQtyLocked(!isTotalQtyLocked)}
-                              showLockButton={true}
-                            />
-                          ) : (
-                            <div className="space-y-2">
-                              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                                Right Total Qty (Read-Only)
-                              </label>
-                              <div className="p-3 rounded-lg border-2 bg-gray-100 dark:bg-gray-800 border-gray-300 dark:border-gray-600">
-                                <div className="text-center font-bold text-lg text-gray-600 dark:text-gray-400">
-                                  {formData.originalRightQty || 0} pieces
-                                </div>
-                              </div>
-                              <div className="text-xs text-gray-500 dark:text-gray-400">
-                                📖 Right eye original stock (constant).
+                          {/* Right Total Qty - READ-ONLY for flattop lenses */}
+                          <div className="space-y-2">
+                            <label className="text-sm font-medium text-gray-700 dark:text-gray-300 flex items-center gap-2">
+                              Right Total Qty (Auto-calculated)
+                              <span className="text-xs bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300 px-2 py-1 rounded-full">
+                                🔒 READ-ONLY
+                              </span>
+                            </label>
+                            <div className="p-3 rounded-lg border-2 bg-blue-50 dark:bg-blue-900/20 border-blue-300 dark:border-blue-600">
+                              <div className="text-center font-bold text-lg text-blue-600 dark:text-blue-400">
+                                {formData.originalRightQty || 0} pieces
                               </div>
                             </div>
-                          )}
+                            <div className="text-xs text-blue-600 dark:text-blue-400 text-center">
+                              🔄 <strong>Auto-calculated:</strong> Set automatically when right quantity is entered
+                            </div>
+                            <div className="text-xs text-gray-500 dark:text-gray-400 text-center">
+                              Sold: {formData.rightSoldQty || 0} pieces
+                            </div>
+                          </div>
 
                           {/* Right Restock Qty */}
                           <IncrementDecrementField
@@ -1184,13 +1190,19 @@ const LensForm: React.FC<LensFormProps> = ({ onSubmit, initialData, isSubmitting
                               const difference = value - currentRestockedRight;
                               
                               updateField('restockedRightQty', value);
-                              updateField('rightQty', Math.max(0, currentRightQty + difference));
+                              const newRightQty = Math.max(0, currentRightQty + difference);
+                              updateField('rightQty', newRightQty);
                               updateField('restockedQty', (formData.restockedLeftQty || 0) + value);
-                              updateField('qty', (formData.leftQty || 0) + Math.max(0, currentRightQty + difference));
+                              updateField('qty', (formData.leftQty || 0) + newRightQty);
+                              
+                              // Update sold quantity when restocking
+                              const totalRight = (formData.originalRightQty || 0) + value;
+                              const soldRight = Math.max(0, totalRight - newRightQty);
+                              updateField('rightSoldQty', soldRight);
                             }}
                             label="Right Restock Qty"
                             min={0}
-                            helpText={`Additional right eye stock. Added: ${formData.restockedRightQty || 0} pcs`}
+                            helpText={`Additional right eye stock. Restocked: ${formData.restockedRightQty || 0} pcs (increases remaining qty)`}
                             variant="remaining"
                           />
 
@@ -1215,39 +1227,26 @@ const LensForm: React.FC<LensFormProps> = ({ onSubmit, initialData, isSubmitting
                           👁️ Left Eye Inventory
                         </h5>
                         <div className="grid grid-cols-1 gap-4">
-                          {/* Left Total Qty */}
-                          {isAdmin ? (
-                            <IncrementDecrementField
-                              value={formData.originalLeftQty || 0}
-                              onChange={(value) => {
-                                if (!isTotalQtyLocked) {
-                                  updateField('originalLeftQty', value);
-                                  updateField('originalQty', roundToHalf((formData.originalRightQty || 0) + value));
-                                }
-                              }}
-                              label="Left Total Qty - ADMIN"
-                              min={0}
-                              helpText={`Left eye original stock. Sold: ${formData.leftSoldQty || 0} pcs`}
-                              variant="total"
-                              isLocked={isTotalQtyLocked}
-                              onToggleLock={() => setIsTotalQtyLocked(!isTotalQtyLocked)}
-                              showLockButton={true}
-                            />
-                          ) : (
-                            <div className="space-y-2">
-                              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                                Left Total Qty (Read-Only)
-                              </label>
-                              <div className="p-3 rounded-lg border-2 bg-gray-100 dark:bg-gray-800 border-gray-300 dark:border-gray-600">
-                                <div className="text-center font-bold text-lg text-gray-600 dark:text-gray-400">
-                                  {formData.originalLeftQty || 0} pieces
-                                </div>
-                              </div>
-                              <div className="text-xs text-gray-500 dark:text-gray-400">
-                                📖 Left eye original stock (constant).
+                          {/* Left Total Qty - READ-ONLY for flattop lenses */}
+                          <div className="space-y-2">
+                            <label className="text-sm font-medium text-gray-700 dark:text-gray-300 flex items-center gap-2">
+                              Left Total Qty (Auto-calculated)
+                              <span className="text-xs bg-green-100 dark:bg-green-900 text-green-600 dark:text-green-300 px-2 py-1 rounded-full">
+                                🔒 READ-ONLY
+                              </span>
+                            </label>
+                            <div className="p-3 rounded-lg border-2 bg-green-50 dark:bg-green-900/20 border-green-300 dark:border-green-600">
+                              <div className="text-center font-bold text-lg text-green-600 dark:text-green-400">
+                                {formData.originalLeftQty || 0} pieces
                               </div>
                             </div>
-                          )}
+                            <div className="text-xs text-green-600 dark:text-green-400 text-center">
+                              🔄 <strong>Auto-calculated:</strong> Set automatically when left quantity is entered
+                            </div>
+                            <div className="text-xs text-gray-500 dark:text-gray-400 text-center">
+                              Sold: {formData.leftSoldQty || 0} pieces
+                            </div>
+                          </div>
 
                           {/* Left Restock Qty */}
                           <IncrementDecrementField
@@ -1274,10 +1273,15 @@ const LensForm: React.FC<LensFormProps> = ({ onSubmit, initialData, isSubmitting
                             onChange={(value) => {
                               updateField('leftQty', value);
                               updateField('qty', (formData.rightQty || 0) + value);
+                              
+                              // Calculate sold quantity: Total + Restocked - Available  
+                              const totalLeft = (formData.originalLeftQty || 0) + (formData.restockedLeftQty || 0);
+                              const soldLeft = Math.max(0, totalLeft - value);
+                              updateField('leftSoldQty', soldLeft);
                             }}
-                            label="Left Available Qty"
+                            label="Left Remaining Qty"
                             min={0}
-                            helpText={`Left eye available stock. Current: ${formData.leftQty || 0} pcs`}
+                            helpText={`Left eye remaining stock. Available: ${formData.leftQty || 0} pcs | Sold: ${Math.max(0, ((formData.originalLeftQty || 0) + (formData.restockedLeftQty || 0)) - (formData.leftQty || 0))} pcs`}
                             variant="remaining"
                           />
                         </div>
@@ -1308,7 +1312,7 @@ const LensForm: React.FC<LensFormProps> = ({ onSubmit, initialData, isSubmitting
                             </div>
                             <div className="text-center p-2 bg-white dark:bg-gray-600 rounded shadow-sm">
                               <div className="font-bold text-green-600 dark:text-green-400">{formData.rightQty || 0}</div>
-                              <div className="text-xs text-gray-600 dark:text-gray-400">Available</div>
+                              <div className="text-xs text-gray-600 dark:text-gray-400">Remaining</div>
                             </div>
                           </div>
                         </div>
@@ -1331,7 +1335,7 @@ const LensForm: React.FC<LensFormProps> = ({ onSubmit, initialData, isSubmitting
                             </div>
                             <div className="text-center p-2 bg-white dark:bg-gray-600 rounded shadow-sm">
                               <div className="font-bold text-green-600 dark:text-green-400">{formData.leftQty || 0}</div>
-                              <div className="text-xs text-gray-600 dark:text-gray-400">Available</div>
+                              <div className="text-xs text-gray-600 dark:text-gray-400">Aviblable</div>
                             </div>
                           </div>
                         </div>
@@ -1342,7 +1346,8 @@ const LensForm: React.FC<LensFormProps> = ({ onSubmit, initialData, isSubmitting
                           <div className="grid grid-cols-4 gap-3">
                             <div className="text-center p-2 bg-white dark:bg-gray-600 rounded shadow-sm border-2 border-blue-200 dark:border-blue-600">
                               <div className="font-bold text-blue-600 dark:text-blue-400">{(formData.originalRightQty || 0) + (formData.originalLeftQty || 0)}</div>
-                              <div className="text-xs text-gray-600 dark:text-gray-400">Total</div>
+                              <div className="text-xs text-gray-600 dark:text-gray-400">Total Original</div>
+                              <div className="text-xs text-blue-500 dark:text-blue-300">🔄 Auto-calc</div>
                             </div>
                             <div className="text-center p-2 bg-white dark:bg-gray-600 rounded shadow-sm border-2 border-purple-200 dark:border-purple-600">
                               <div className="font-bold text-purple-600 dark:text-purple-400">{(formData.restockedRightQty || 0) + (formData.restockedLeftQty || 0)}</div>
@@ -1354,13 +1359,13 @@ const LensForm: React.FC<LensFormProps> = ({ onSubmit, initialData, isSubmitting
                             </div>
                             <div className="text-center p-2 bg-white dark:bg-gray-600 rounded shadow-sm border-2 border-green-200 dark:border-green-600">
                               <div className="font-bold text-green-600 dark:text-green-400">{(formData.rightQty || 0) + (formData.leftQty || 0)}</div>
-                              <div className="text-xs text-gray-600 dark:text-gray-400">Available</div>
+                              <div className="text-xs text-gray-600 dark:text-gray-400">Remaining</div>
                             </div>
                           </div>
                         </div>
                       </div>
                       <div className="mt-3 text-xs text-purple-600 dark:text-purple-400 text-center">
-                        💡 <strong>Flattop POS Logic:</strong> Left & Right managed separately | Restocking increases Available without affecting Total | Combined totals calculated automatically
+                        💡 <strong>Flattop Auto-calculation Logic:</strong> Total Original = Right Original + Left Original (READ-ONLY) | Total Current = Right Current + Left Current (READ-ONLY) | Only individual Right/Left quantities can be modified
                       </div>
                     </div>
                   </div>
