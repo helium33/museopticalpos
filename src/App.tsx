@@ -1,4 +1,4 @@
-import React, { useEffect, useState, Suspense } from 'react';
+import React, { useEffect, useState, Suspense, startTransition } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import { ThemeProvider } from './context/ThemeContext';
@@ -92,52 +92,52 @@ function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/not-authorized" element={<NotAuthorized />} />
             
-            <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
-              <Route index element={<Navigate to="/lens\" replace />} />
+            <Route path="/" element={<ProtectedRoute><Suspense fallback={<PageLoader />}><Layout /></Suspense></ProtectedRoute>}>
+              <Route index element={<Navigate to="/lens" replace />} />
               
               {/* Admin Only Routes */}
-              <Route path="transcation" element={<TransactionsPage />  } />
+              <Route path="transcation" element={<Suspense fallback={<PageLoader />}><TransactionsPage /></Suspense>} />
 
-              <Route path="expenses" element={<AdminRoute><ExpensesPage /></AdminRoute>} />
-              <Route path="suppliers" element={<AdminRoute><SuppliersPage /></AdminRoute>} />
-              <Route path="staff" element={<AdminRoute><StaffPage /></AdminRoute>} />
-              <Route path="settings/*" element={<AdminRoute><SettingsPage /></AdminRoute>} />
+              <Route path="expenses" element={<AdminRoute><Suspense fallback={<PageLoader />}><ExpensesPage /></Suspense></AdminRoute>} />
+              <Route path="suppliers" element={<AdminRoute><Suspense fallback={<PageLoader />}><SuppliersPage /></Suspense></AdminRoute>} />
+              <Route path="staff" element={<AdminRoute><Suspense fallback={<PageLoader />}><StaffPage /></Suspense></AdminRoute>} />
+              <Route path="settings/*" element={<AdminRoute><Suspense fallback={<PageLoader />}><SettingsPage /></Suspense></AdminRoute>} />
               
               {/* Dashboard - Only for owner and admin */}
-              <Route path="dashboard" element={<AdminRoute><Dashboard /></AdminRoute>} />
-              <Route path="staff-dashboard" element={<AdminRoute><StaffDashboard /></AdminRoute>} />
+              <Route path="dashboard" element={<AdminRoute><Suspense fallback={<PageLoader />}><Dashboard /></Suspense></AdminRoute>} />
+              <Route path="staff-dashboard" element={<AdminRoute><Suspense fallback={<PageLoader />}><StaffDashboard /></Suspense></AdminRoute>} />
 
               
               {/* Inventory Routes - Accessible to all authorized users */}
-              <Route path="lens" element={<LensPage />} />
-              <Route path="frame/:store" element={<FramePage />} />
-              <Route path="accessories/:store" element={<AccessoriesPage />} />
-              <Route path="contact-lens/:store" element={<ContactLensPage />} />
+              <Route path="lens" element={<Suspense fallback={<PageLoader />}><LensPage /></Suspense>} />
+              <Route path="frame/:store" element={<Suspense fallback={<PageLoader />}><FramePage /></Suspense>} />
+              <Route path="accessories/:store" element={<Suspense fallback={<PageLoader />}><AccessoriesPage /></Suspense>} />
+              <Route path="contact-lens/:store" element={<Suspense fallback={<PageLoader />}><ContactLensPage /></Suspense>} />
 
               
               {/* Sales Related Routes - Accessible to all authorized users */}
-              <Route path="voc/:store" element={<VocPage />} />
-              <Route path="sales" element={<SalesDataPage />} />
+              <Route path="voc/:store" element={<Suspense fallback={<PageLoader />}><VocPage /></Suspense>} />
+              <Route path="sales" element={<Suspense fallback={<PageLoader />}><SalesDataPage /></Suspense>} />
               
               {/* Transfers - Accessible to all authorized users */}
-              <Route path="transfers" element={<TransfersPage />} />
+              <Route path="transfers" element={<Suspense fallback={<PageLoader />}><TransfersPage /></Suspense>} />
               
               {/* Data Entry - Accessible to staff and above */}
-              <Route path="data-entry" element={<DataEntryPage />} />
+              <Route path="data-entry" element={<Suspense fallback={<PageLoader />}><DataEntryPage /></Suspense>} />
               
               {/* History - Only for owner and admin */}
-              <Route path="history" element={<AdminRoute><HistoryPage /></AdminRoute>} />
+              <Route path="history" element={<AdminRoute><Suspense fallback={<PageLoader />}><HistoryPage /></Suspense></AdminRoute>} />
               
               {/* Customer and Payment Routes */}
-              <Route path="customer/:store" element={<CustomerPage />} />
-              <Route path="payment/:store" element={<PaymentPage />} />
+              <Route path="customer/:store" element={<Suspense fallback={<PageLoader />}><CustomerPage /></Suspense>} />
+              <Route path="payment/:store" element={<Suspense fallback={<PageLoader />}><PaymentPage /></Suspense>} />
               
               {/* Deposits - Only for owner and admin */}
-              <Route path="deposits" element={<DepositsPage />} />
+              <Route path="deposits" element={<Suspense fallback={<PageLoader />}><DepositsPage /></Suspense>} />
 
-              <Route path="yangon-office/frame" element={<YangonFramePage />} />
-              <Route path="yangon-office/accessories" element={<YangonAccessoriesPage />} />
-              <Route path="yangon-office/content-lens" element={<YangonContentLensPage />} />
+              <Route path="yangon-office/frame" element={<Suspense fallback={<PageLoader />}><YangonFramePage /></Suspense>} />
+              <Route path="yangon-office/accessories" element={<Suspense fallback={<PageLoader />}><YangonAccessoriesPage /></Suspense>} />
+              <Route path="yangon-office/content-lens" element={<Suspense fallback={<PageLoader />}><YangonContentLensPage /></Suspense>} />
 
               <Route path="*" element={<NotFound />} />
               

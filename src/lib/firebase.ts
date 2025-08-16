@@ -4,14 +4,24 @@ import { getAuth } from "firebase/auth";
 import { getFirestore, enableIndexedDbPersistence, doc } from "firebase/firestore";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
+// Debug environment variables (only in development)
+if (import.meta.env.MODE === 'development') {
+  console.log('Environment check:', {
+    NODE_ENV: import.meta.env.MODE,
+    hasApiKey: !!import.meta.env.VITE_FIREBASE_API_KEY,
+    hasAuthDomain: !!import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+    hasProjectId: !!import.meta.env.VITE_FIREBASE_PROJECT_ID
+  });
+}
+
 const firebaseConfig = {
-  apiKey: "AIzaSyCnR5SMrO8vhO1lEPRx1Ctg6gxyhYfVMp0",
-  authDomain: "store-b8644.firebaseapp.com",
-  projectId: "store-b8644",
-  storageBucket: "store-b8644.appspot.com",
-  messagingSenderId: "353628807781",
-  appId: "1:353628807781:web:950616402c6e1157729c8c",
-  measurementId: "G-YL7NLQBLG9"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyCnR5SMrO8vhO1lEPRx1Ctg6gxyhYfVMp0",
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "store-b8644.firebaseapp.com",
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "store-b8644",
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "store-b8644.appspot.com",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "353628807781",
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:353628807781:web:950616402c6e1157729c8c",
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || "G-YL7NLQBLG9"
 };
 
 // Initialize Firebase
@@ -25,18 +35,27 @@ let persistenceEnabled = false;
 
 const setupPersistence = async () => {
   try {
-    await enableIndexedDbPersistence(db, { 
-      forceOwnership: true 
-    });
-    persistenceEnabled = true;
-    console.log('Offline persistence enabled');
+    // Only enable persistence in browser environment
+    if (typeof window !== 'undefined') {
+      await enableIndexedDbPersistence(db, { 
+        forceOwnership: true 
+      });
+      persistenceEnabled = true;
+      if (import.meta.env.MODE === 'development') {
+        console.log('Offline persistence enabled');
+      }
+    }
   } catch (err) {
     if (typeof err === 'object' && err !== null && 'code' in err) {
       const code = (err as { code: string }).code;
       if (code === 'failed-precondition') {
-        console.warn('Persistence failed: Multiple tabs open');
+        if (import.meta.env.MODE === 'development') {
+          console.warn('Persistence failed: Multiple tabs open');
+        }
       } else if (code === 'unimplemented') {
-        console.warn('Persistence not available in this browser');
+        if (import.meta.env.MODE === 'development') {
+          console.warn('Persistence not available in this browser');
+        }
       }
     }
     persistenceEnabled = false;
@@ -104,67 +123,6 @@ export const compressImage = (file: File, maxWidth: number = 600, quality: numbe
     
     // Create object URL for faster loading
     const objectUrl = URL.createObjectURL(file);
-
-    // Clean up object URL after loading
-    const cleanup = () => {
-      URL.revokeObjectURL(objectUrl);
-    };
-
-    img.onload = () => {
-      try {
-        // Calculate new dimensions while maintaining aspect ratio
-        let { width, height } = img;
-        
-        if (width > height) {
-          if (width > maxWidth) {
-            height = (height * maxWidth) / width;
-            width = maxWidth;
-          }
-        } else {
-          if (height > maxWidth) {
-            width = (width * maxWidth) / height;
-            height = maxWidth;
-          }
-        }
-        
-        canvas.width = width;
-        canvas.height = height;
-        
-        // Clear canvas and draw image with optimized settings
-        if (ctx) {
-          ctx.clearRect(0, 0, width, height);
-          ctx.imageSmoothingEnabled = true;
-          ctx.imageSmoothingQuality = 'high';
-          ctx.drawImage(img, 0, 0, width, height);
-        }
-        
-        canvas.toBlob(
-          (blob) => {
-            cleanup();
-            if (blob) {
-              const compressedFile = new File([blob], file.name, {
-                type: 'image/jpeg',
-                lastModified: Date.now(),
-              });
-              resolve(compressedFile);
-            } else {
-              reject(new Error('Failed to compress image'));
-            }
-          },
-          'image/jpeg',
-          quality
-        );
-      } catch (error) {
-        cleanup();
-        reject(error);
-      }
-    };
-
-    img.onerror = () => {
-      cleanup();
-      reject(new Error('Failed to load image'));
-    };
-
     img.src = objectUrl;
   });
 };

@@ -18,7 +18,7 @@ const AdminRoute: React.FC<AdminRouteProps> = ({ children }) => {
   }
 
   if (!isAdmin) {
-    return <Navigate to="/not-authorized" replace />;
+    return <Navigate to="/lens" replace />;
   }
 
   return <>{children}</>;

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:netlify": "npm run build",
     "lint": "eslint src --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
   },
@@ -49,24 +50,12 @@
     "eslint-plugin-react-hooks": "^4.6.0",
     "eslint-plugin-react-refresh": "^0.4.4",
     "postcss": "^8.4.31",
-    "rollup-plugin-visualizer": "^6.0.3",
+    "rollup-plugin-visualizer": "^5.12.0",
     "tailwindcss": "^3.3.5",
+    "terser": "^5.43.1",
     "typescript": "^5.2.2",
     "vite": "^5.0.0",
     "vite-bundle-analyzer": "^0.7.0",
     "vite-plugin-chunk-split": "^0.5.0"
-  },
-  "description": "A comprehensive Point of Sale (POS) system designed for optical stores, built with React, TypeScript, and Firebase.",
-  "main": "eslint.config.js",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/helium33/museopticalpos.git"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/helium33/museopticalpos/issues"
-  },
-  "homepage": "https://github.com/helium33/museopticalpos#readme"
+  }
 }

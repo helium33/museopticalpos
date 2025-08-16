@@ -1,5 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { PlusCircle, Edit, Trash2, Eye, ShoppingCart, Search, X, Filter, ChevronDown, ChevronUp, AlertTriangle, ArrowRightLeft, Package, RotateCcw, RefreshCw, FileSpreadsheet } from 'lucide-react';
+import { collection, getDocs, query, where, doc, updateDoc, deleteDoc, addDoc, serverTimestamp, orderBy, onSnapshot } from 'firebase/firestore';
+import { db } from '../../lib/firebase';
 import Header from '../../components/layout/Header';
 import Button from '../../components/ui/Button';
 import Input from '../../components/ui/Input';
@@ -8,29 +10,228 @@ import DataTable from '../../components/tables/DataTable';
 import FormModal from '../../components/modals/FormModal';
 import DeleteConfirmDialog from '../../components/dialogs/DeleteConfirmDialog';
 import SellItemDialog from '../../components/dialogs/SellItemDialog';
-import ContactLensForm from '../../components/contactLens/ContactLensForm'
-import { ContactLensFormData } from '../../components/contactLens/ContactLensForm';
-import { formatCurrency } from '../../lib/utils';
+import TransferManagement from '../../components/transfer/TransferMangment';
 import toast from 'react-hot-toast';
-import { 
-  getContactLenses, 
-  addContactLens, 
-  updateContactLens, 
-  deleteContactLens, 
-  sellContactLens 
-} from '../../services/contactLensService';
+import { formatCurrency } from '../../lib/utils';
 import { useAuth } from '../../context/AuthContext';
+import { useParams, useNavigate } from 'react-router-dom';
+import { deleteItemWithHistory, updateItemWithHistory } from '../../services/firebaseService';
+import { usePermissions } from '../../hooks/useSidebarItem';
 
 // Define types
 export type ContactLensCategory = 'မျက်ကပ်အကြည်' | 'Pretty and Shinning' | 'F.l' | 'Big Eye Black' | 'Ms plane' | 'Ms ပါဝါ color';
 
+export interface ContactLensFormData {
+  id?: string;
+  code: string;
+  name: string;
+  category: ContactLensCategory;
+  power?: string;
+  qty: number;
+  price: number;
+  soldQty?: number;
+  originalQty?: number;
+  totalQty?: number;
+  transferInQty?: number;
+  transferOutQty?: number;
+  restockQty?: number;
+  store?: string;
+  createdAt?: any;
+  updatedAt?: any;
+}
+
+// RestockDialog component
+const RestockDialog: React.FC<{
+  isOpen: boolean;
+  onClose: () => void;
+  itemName: string;
+  onRestock: (quantity: number) => void;
+}> = ({ isOpen, onClose, itemName, onRestock }) => {
+  const [quantity, setQuantity] = useState<number>(1);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (quantity > 0) {
+      onRestock(quantity);
+      setQuantity(1);
+    }
+  };
+
+  const handleClose = () => {
+    setQuantity(1);
+    onClose();
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 w-full max-w-md mx-4">
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+          Restock Item
+        </h3>
+        <p className="text-gray-600 dark:text-gray-400 mb-4">
+          How many units would you like to restock for <strong>{itemName}</strong>?
+        </p>
+        
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <Input
+            label="Restock Quantity"
+            type="number"
+            value={quantity}
+            onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
+            min={1}
+            required
+            className="w-full"
+          />
+          
+          <div className="flex justify-end space-x-3">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleClose}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              variant="primary"
+              className="flex items-center gap-2"
+            >
+              <RotateCcw size={16} />
+              Restock
+            </Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// ContactLensForm component
+const ContactLensForm: React.FC<{
+  onSubmit: (data: ContactLensFormData) => void;
+  initialData?: ContactLensFormData;
+  isSubmitting: boolean;
+}> = ({ onSubmit, initialData, isSubmitting }) => {
+  const [formData, setFormData] = useState<ContactLensFormData>({
+    code: initialData?.code || '',
+    name: initialData?.name || '',
+    category: initialData?.category || 'မျက်ကပ်အကြည်',
+    power: initialData?.power || '',
+    qty: initialData ? (initialData.originalQty || initialData.totalQty || initialData.qty || 0) : 0,
+    price: initialData?.price || 0,
+  });
+
+  // Update form data when initialData changes
+  useEffect(() => {
+    if (initialData) {
+      setFormData({
+        code: initialData.code || '',
+        name: initialData.name || '',
+        category: initialData.category || 'မျက်ကပ်အကြည်',
+        power: initialData.power || '',
+        qty: initialData.originalQty || initialData.totalQty || initialData.qty || 0,
+        price: initialData.price || 0,
+      });
+    }
+  }, [initialData]);
+  
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    // Validate required fields
+    if (!formData.code.trim()) {
+      toast.error('Code is required');
+      return;
+    }
+    
+    if (!formData.name.trim()) {
+      toast.error('Name is required');
+      return;
+    }
+    
+    if (formData.qty < 0) {
+      toast.error('Quantity cannot be negative');
+      return;
+    }
+    
+    if (formData.price < 0) {
+      toast.error('Price cannot be negative');
+      return;
+    }
+    
+    onSubmit({
+      ...formData,
+      totalQty: formData.qty // Set totalQty to the entered quantity
+    });
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <Input
+        label="Code"
+        value={formData.code}
+        onChange={(e) => setFormData(prev => ({ ...prev, code: e.target.value }))}
+        required
+      />
+      <Input
+        label="Name"
+        value={formData.name}
+        onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
+        required
+      />
+      <Select
+        label="Category"
+        value={formData.category}
+        onChange={(e) => setFormData(prev => ({ ...prev, category: e.target.value as ContactLensCategory }))}
+        options={[
+          { value: 'မျက်ကပ်အကြည်', label: 'မျက်ကပ်အကြည်' },
+          { value: 'Pretty and Shinning', label: 'Pretty and Shinning' },
+          { value: 'F.l', label: 'F.l' },
+          { value: 'Big Eye Black', label: 'Big Eye Black' },
+          { value: 'Ms plane', label: 'Ms plane' },
+          { value: 'Ms ပါဝါ color', label: 'Ms ပါဝါ color' }
+        ]}
+      />
+      <Input
+        label="Power"
+        value={formData.power || ''}
+        onChange={(e) => setFormData(prev => ({ ...prev, power: e.target.value }))}
+      />
+      <Input
+        label="Total Quantity"
+        type="number"
+        value={formData.qty}
+        onChange={(e) => setFormData(prev => ({ ...prev, qty: Number(e.target.value) }))}
+        required
+        min={0}
+      />
+      <Input
+        label="Price"
+        type="number"
+        value={formData.price}
+        onChange={(e) => setFormData(prev => ({ ...prev, price: Number(e.target.value) }))}
+        required
+        min={0}
+        step="0.01"
+      />
+      <Button type="submit" disabled={isSubmitting} className="w-full">
+        {isSubmitting ? 'Saving...' : 'Save Contact Lens'}
+      </Button>
+    </form>
+  );
+};
+
 const ContactLensPage: React.FC = () => {
+  const { store } = useParams<{ store: string }>();
+  const navigate = useNavigate();
   const { user } = useAuth();
-  const store = 'win'; // You can make this dynamic based on route params
-  const userEmail = user?.email || 'system@store.com';
+  const { canManageContactLenses, canEditContactLenses, canDeleteContactLenses, canAddContactLenses, canAccessStore } = usePermissions();
+  
   const [contactLenses, setContactLenses] = useState<ContactLensFormData[]>([]);
   const [filteredContactLenses, setFilteredContactLenses] = useState<ContactLensFormData[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState<ContactLensCategory | null>(null);
   const [activeTab, setActiveTab] = useState<'inventory' | 'transfers'>('inventory');
   
@@ -44,8 +245,13 @@ const ContactLensPage: React.FC = () => {
   const [sellDialogOpen, setSellDialogOpen] = useState(false);
   const [contactLensToSell, setContactLensToSell] = useState<ContactLensFormData | null>(null);
   
+  const [restockDialogOpen, setRestockDialogOpen] = useState(false);
+  const [contactLensToRestock, setContactLensToRestock] = useState<ContactLensFormData | null>(null);
+  
   const [detailViewOpen, setDetailViewOpen] = useState(false);
   const [selectedContactLens, setSelectedContactLens] = useState<ContactLensFormData | null>(null);
+
+  const [originalQtyMap, setOriginalQtyMap] = useState<Record<string, number>>({});
 
   // Search states
   const [searchExpanded, setSearchExpanded] = useState(false);
@@ -60,24 +266,10 @@ const ContactLensPage: React.FC = () => {
     stockStatus: ''
   });
 
-  // Load contact lenses from Firebase
-  const loadContactLenses = async () => {
-    try {
-      setLoading(true);
-      const data = await getContactLenses(store);
-      setContactLenses(data);
-      setFilteredContactLenses(data);
-    } catch (error) {
-      console.error('Error loading contact lenses:', error);
-      toast.error('Failed to load contact lenses');
-    } finally {
-      setLoading(false);
-    }
+  // Helper function to display quantity with proper zero handling
+  const displayQuantity = (qty: number | undefined | null): string => {
+    return String(qty || 0);
   };
-
-  useEffect(() => {
-    loadContactLenses();
-  }, [store]);
 
   const categories: ContactLensCategory[] = ['မျက်ကပ်အကြည်', 'Pretty and Shinning', 'F.l', 'Big Eye Black', 'Ms plane', 'Ms ပါဝါ color'];
   const stockStatuses = [
@@ -88,81 +280,92 @@ const ContactLensPage: React.FC = () => {
     { value: 'high-stock', label: 'High Stock (>10)' }
   ];
 
-  // Helper function to display quantity with proper zero handling
-  const displayQuantity = (qty: number | undefined | null): string => {
-    return String(qty || 0);
-  };
+  // Check store access on component mount
+  useEffect(() => {
+    if (store && !canAccessStore(store)) {
+      toast.error(`You don't have access to ${store.toUpperCase()} store`);
+      navigate('/dashboard');
+      return;
+    }
+  }, [store, canAccessStore, navigate]);
 
-  // Filter function
-  const applyFilters = (contactLensesList: ContactLensFormData[]) => {
-    let filtered = [...contactLensesList];
+  // Memoized filter function for better performance
+  const applyFilters = useCallback((contactLensesList: ContactLensFormData[]) => {
+    let filtered = contactLensesList;
 
     if (selectedCategory) {
       filtered = filtered.filter(lens => lens.category === selectedCategory);
     }
 
     if (searchFilters.code) {
+      const codeFilter = searchFilters.code.toLowerCase();
       filtered = filtered.filter(lens => 
-        lens.code.toLowerCase().includes(searchFilters.code.toLowerCase())
+        lens.code.toLowerCase().includes(codeFilter)
       );
     }
 
     if (searchFilters.name) {
+      const nameFilter = searchFilters.name.toLowerCase();
       filtered = filtered.filter(lens => 
-        lens.name.toLowerCase().includes(searchFilters.name.toLowerCase())
+        lens.name.toLowerCase().includes(nameFilter)
       );
     }
 
     if (searchFilters.power) {
+      const powerFilter = searchFilters.power.toLowerCase();
       filtered = filtered.filter(lens => 
-        lens.power && lens.power.toLowerCase().includes(searchFilters.power.toLowerCase())
+        lens.power && lens.power.toLowerCase().includes(powerFilter)
       );
     }
 
     if (searchFilters.priceMin) {
-      filtered = filtered.filter(lens => lens.price >= parseFloat(searchFilters.priceMin));
+      const minPrice = parseFloat(searchFilters.priceMin);
+      filtered = filtered.filter(lens => lens.price >= minPrice);
     }
 
     if (searchFilters.priceMax) {
-      filtered = filtered.filter(lens => lens.price <= parseFloat(searchFilters.priceMax));
+      const maxPrice = parseFloat(searchFilters.priceMax);
+      filtered = filtered.filter(lens => lens.price <= maxPrice);
     }
 
     if (searchFilters.qtyMin) {
-      filtered = filtered.filter(lens => lens.remainingQty >= parseFloat(searchFilters.qtyMin));
+      const minQty = parseFloat(searchFilters.qtyMin);
+      filtered = filtered.filter(lens => lens.qty >= minQty);
     }
 
     if (searchFilters.qtyMax) {
-      filtered = filtered.filter(lens => lens.remainingQty <= parseFloat(searchFilters.qtyMax));
+      const maxQty = parseFloat(searchFilters.qtyMax);
+      filtered = filtered.filter(lens => lens.qty <= maxQty);
     }
 
     if (searchFilters.stockStatus) {
       switch (searchFilters.stockStatus) {
         case 'in-stock':
-          filtered = filtered.filter(lens => lens.remainingQty > 0);
+          filtered = filtered.filter(lens => lens.qty > 0);
           break;
         case 'low-stock':
-          filtered = filtered.filter(lens => lens.remainingQty > 0 && lens.remainingQty <= 2);
+          filtered = filtered.filter(lens => lens.qty > 0 && lens.qty <= 2);
           break;
         case 'out-of-stock':
-          filtered = filtered.filter(lens => lens.remainingQty === 0);
+          filtered = filtered.filter(lens => lens.qty === 0);
           break;
         case 'high-stock':
-          filtered = filtered.filter(lens => lens.remainingQty > 10);
+          filtered = filtered.filter(lens => lens.qty > 10);
           break;
       }
     }
 
     return filtered;
-  };
+  }, [selectedCategory, searchFilters]);
 
-  const updateSearchFilter = (key: string, value: string) => {
+  const updateSearchFilter = useCallback((key: string, value: string) => {
     setSearchFilters(prev => ({
       ...prev,
       [key]: value
     }));
-  };
+  }, []);
 
-  const clearAllFilters = () => {
+  const clearAllFilters = useCallback(() => {
     setSearchFilters({
       code: '',
       name: '',
@@ -174,19 +377,77 @@ const ContactLensPage: React.FC = () => {
       stockStatus: ''
     });
     setSelectedCategory(null);
-  };
+  }, []);
 
-  const hasActiveFilters = () => {
+  const hasActiveFilters = useMemo(() => {
     return Object.values(searchFilters).some(value => value !== '') ||
            selectedCategory !== null;
-  };
+  }, [searchFilters, selectedCategory]);
 
-  const getActiveFilterCount = () => {
+  const getActiveFilterCount = useMemo(() => {
     let count = 0;
     if (selectedCategory) count++;
     count += Object.values(searchFilters).filter(value => value !== '').length;
     return count;
+  }, [searchFilters, selectedCategory]);
+
+  // Get store-specific email display
+  const getStoreEmail = (storeName: string) => {
+    switch (storeName.toLowerCase()) {
+      case 'win':
+        return 'winvision1717@gmail.com';
+      case 'pwint':
+        return 'pwintoptical@gmail.com';
+      case 'yangon':
+        return 'ygnoptical@gmail.com';
+      default:
+        return '';
+    }
   };
+
+  // Set up real-time listener
+  useEffect(() => {
+    if (!store || !canAccessStore(store) || activeTab !== 'inventory') return;
+
+    const contactLensQuery = query(
+      collection(db, 'contactLenses'),
+      where('store', '==', store)
+    );
+
+    const unsubscribe = onSnapshot(contactLensQuery, (snapshot) => {
+      const contactLensesData = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          ...data,
+          qty: Number(data.qty) || 0,
+          price: Number(data.price) || 0,
+          totalQty: Number(data.originalQty) || Number(data.qty) || 0,
+          soldQty: Number(data.soldQty) || 0,
+          transferInQty: Number(data.transferInQty) || 0,
+          transferOutQty: Number(data.transferOutQty) || 0,
+          restockQty: Number(data.restockQty) || 0
+        } as ContactLensFormData;
+      });
+
+      const qtyMap: Record<string, number> = {};
+      contactLensesData.forEach(contactLens => {
+        if (contactLens.id) {
+          qtyMap[contactLens.id] = contactLens.originalQty || contactLens.totalQty || contactLens.qty;
+        }
+      });
+
+      setOriginalQtyMap(qtyMap);
+      setContactLenses(contactLensesData);
+      setLoading(false);
+    }, (error) => {
+      console.error('Error fetching contact lenses:', error);
+      toast.error('Failed to fetch contact lenses');
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [store, canAccessStore, activeTab]);
 
   // Apply filters when data or filters change
   useEffect(() => {
@@ -194,55 +455,253 @@ const ContactLensPage: React.FC = () => {
       const filtered = applyFilters(contactLenses);
       setFilteredContactLenses(filtered);
     }
-  }, [contactLenses, selectedCategory, searchFilters, activeTab]);
+  }, [contactLenses, selectedCategory, searchFilters, activeTab, applyFilters]);
+
+  // Return early if user doesn't have access to this store
+  if (store && !canAccessStore(store)) {
+    return (
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8 max-w-md w-full mx-4">
+          <div className="flex items-center justify-center mb-4">
+            <AlertTriangle className="h-12 w-12 text-red-500" />
+          </div>
+          <h2 className="text-xl font-semibold text-gray-900 dark:text-white text-center mb-2">
+            Access Denied
+          </h2>
+          <p className="text-gray-600 dark:text-gray-400 text-center mb-6">
+            You don't have permission to access the {store?.toUpperCase()} store contact lenses.
+          </p>
+          <Button
+            variant="primary"
+            onClick={() => navigate('/dashboard')}
+            className="w-full"
+          >
+            Return to Dashboard
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   const handleFormSubmit = async (data: ContactLensFormData) => {
+    if (!store || !user?.email) {
+      toast.error('Store information or user email missing');
+      return;
+    }
+
+    console.log('Form submit data:', data); // Debug log
+    console.log('Editing contact lens:', editingContactLens); // Debug log
     try {
       setIsSubmitting(true);
-      
+
       if (editingContactLens?.id) {
-        // Update existing contact lens
-        await updateContactLens(editingContactLens.id, data, store, userEmail);
-        await loadContactLenses(); // Reload data from Firebase
+        if (!canEditContactLenses) {
+          toast.error('You do not have permission to edit contact lenses');
+          return;
+        }
+
+        // Calculate the difference in total quantity
+        const totalQtyBefore = originalQtyMap[editingContactLens.id] ?? editingContactLens.totalQty ?? 0;
+        const totalQtyAfter = data.totalQty ?? 0;
+        const qtyDifference = totalQtyAfter - totalQtyBefore;
+
+        // Sold qty is unchanged
+        const soldQty = editingContactLens.soldQty || 0;
+
+        // New remaining qty = previous remaining qty + difference in total qty
+        const newRemainingQty = (editingContactLens.qty ?? 0) + qtyDifference;
+
+        const updatedData = {
+          ...data,
+          totalQty: totalQtyAfter,
+          soldQty: soldQty,
+          qty: newRemainingQty,
+          originalQty: totalQtyAfter,
+          transferInQty: editingContactLens.transferInQty || 0,
+          transferOutQty: editingContactLens.transferOutQty || 0,
+          restockQty: editingContactLens.restockQty || 0,
+          store,
+          updatedAt: serverTimestamp(),
+        };
+
+        console.log('Updated data:', updatedData); // Debug log
+        await updateItemWithHistory(
+          'contactLenses',
+          editingContactLens.id,
+          editingContactLens,
+          updatedData,
+          store,
+          user.email
+        );
+
+        toast.success('Contact lens updated successfully');
       } else {
-        // Add new contact lens
-        await addContactLens(data, store);
-        await loadContactLenses(); // Reload data from Firebase
+        if (!canAddContactLenses) {
+          toast.error('You do not have permission to add contact lenses');
+          return;
+        }
+
+        // For new items, set all quantities equal
+        const newContactLens = {
+          ...data,
+          totalQty: data.totalQty,
+          soldQty: 0,
+          qty: data.totalQty,
+          originalQty: data.totalQty,
+          transferInQty: 0,
+          transferOutQty: 0,
+          restockQty: 0,
+          store,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        };
+
+        console.log('New contact lens data:', newContactLens); // Debug log
+        await addDoc(collection(db, 'contactLenses'), newContactLens);
+        toast.success('Contact lens added successfully');
       }
 
       setIsFormModalOpen(false);
       setEditingContactLens(null);
     } catch (error) {
       console.error('Error saving contact lens:', error);
-      // Error messages are handled in the service
+      toast.error('Failed to save contact lens');
     } finally {
       setIsSubmitting(false);
     }
   };
 
   const confirmSell = async (quantity: number) => {
-    if (!contactLensToSell?.id) return;
+    if (!contactLensToSell?.id || !store || !user?.email || !canManageContactLenses) return;
     
     try {
-      await sellContactLens(contactLensToSell.id, quantity, store, userEmail);
-      await loadContactLenses(); // Reload data from Firebase
+      const newQty = contactLensToSell.qty - quantity;
+      if (newQty < 0) {
+        toast.error('Not enough quantity available');
+        return;
+      }
+      
+      const updatedData = {
+        qty: newQty,
+        soldQty: (contactLensToSell.soldQty || 0) + quantity,
+        updatedAt: serverTimestamp(),
+      };
+
+      await updateItemWithHistory(
+        'contactLenses',
+        contactLensToSell.id,
+        contactLensToSell,
+        {
+          ...contactLensToSell,
+          ...updatedData
+        },
+        store,
+        user.email,
+        [
+          {
+            field: 'qty',
+            oldValue: String(contactLensToSell.qty),
+            newValue: String(newQty)
+          },
+          {
+            field: 'soldQty',
+            oldValue: String(contactLensToSell.soldQty || 0),
+            newValue: String((contactLensToSell.soldQty || 0) + quantity)
+          }
+        ]
+      );
+      
+      // Record the sale
+      await addDoc(collection(db, 'sales'), {
+        itemId: contactLensToSell.id,
+        itemName: contactLensToSell.name,
+        itemCode: contactLensToSell.code,
+        itemType: 'Contact Lens',
+        category: contactLensToSell.category,
+        store,
+        quantity,
+        unitPrice: contactLensToSell.price,
+        totalPrice: contactLensToSell.price * quantity,
+        date: serverTimestamp(),
+      });
+
+      toast.success(`Sold ${quantity} units successfully`);
       setSellDialogOpen(false);
     } catch (error) {
       console.error('Error selling contact lens:', error);
-      // Error messages are handled in the service
+      toast.error('Failed to process sale');
+    }
+  };
+
+  const confirmRestock = async (quantity: number) => {
+    if (!contactLensToRestock?.id || !store || !user?.email || !canEditContactLenses) return;
+    
+    try {
+      const newQty = contactLensToRestock.qty + quantity;
+      const newRestockQty = (contactLensToRestock.restockQty || 0) + quantity;
+      
+      const updatedData = {
+        qty: newQty,
+        restockQty: newRestockQty,
+        updatedAt: serverTimestamp(),
+      };
+
+      await updateItemWithHistory(
+        'contactLenses',
+        contactLensToRestock.id,
+        contactLensToRestock,
+        {
+          ...contactLensToRestock,
+          ...updatedData
+        },
+        store,
+        user.email,
+        [
+          {
+            field: 'qty',
+            oldValue: String(contactLensToRestock.qty),
+            newValue: String(newQty)
+          },
+          {
+            field: 'restockQty',
+            oldValue: String(contactLensToRestock.restockQty || 0),
+            newValue: String(newRestockQty)
+          }
+        ]
+      );
+
+      toast.success(`Restocked ${quantity} units successfully`);
+      setRestockDialogOpen(false);
+      setContactLensToRestock(null);
+    } catch (error) {
+      console.error('Error restocking contact lens:', error);
+      toast.error('Failed to process restock');
     }
   };
 
   const confirmDelete = async () => {
-    if (!contactLensToDelete?.id) return;
+    if (!contactLensToDelete?.id || !store || !user?.email || !canDeleteContactLenses) return;
     
     try {
-      await deleteContactLens(contactLensToDelete.id, store);
-      await loadContactLenses(); // Reload data from Firebase
+      await deleteItemWithHistory(
+        'contactLenses',
+        contactLensToDelete.id,
+        contactLensToDelete,
+        store,
+        user.email
+      );
+      
+      setOriginalQtyMap(prev => {
+        const newMap = { ...prev };
+        delete newMap[contactLensToDelete.id];
+        return newMap;
+      });
+      
+      toast.success('Contact lens deleted successfully');
       setDeleteDialogOpen(false);
     } catch (error) {
       console.error('Error deleting contact lens:', error);
-      // Error messages are handled in the service
+      toast.error('Failed to delete contact lens');
     }
   };
 
@@ -252,46 +711,73 @@ const ContactLensPage: React.FC = () => {
   };
 
   const handleEditContactLens = (contactLens: ContactLensFormData) => {
+    if (!canEditContactLenses) {
+      toast.error('You do not have permission to edit contact lenses');
+      return;
+    }
+    
+    console.log('Editing contact lens:', contactLens); // Debug log
     setEditingContactLens(contactLens);
     setIsFormModalOpen(true);
   };
 
   const handleSellContactLens = (contactLens: ContactLensFormData) => {
+    if (!canManageContactLenses) {
+      toast.error('You do not have permission to sell contact lenses');
+      return;
+    }
     setContactLensToSell(contactLens);
     setSellDialogOpen(true);
   };
 
   const handleDeleteContactLens = (contactLens: ContactLensFormData) => {
+    if (!canDeleteContactLenses) {
+      toast.error('You do not have permission to delete contact lenses');
+      return;
+    }
     setContactLensToDelete(contactLens);
     setDeleteDialogOpen(true);
   };
 
+  const handleRestockContactLens = (contactLens: ContactLensFormData) => {
+    if (!canEditContactLenses) {
+      toast.error('You do not have permission to restock contact lenses');
+      return;
+    }
+    setContactLensToRestock(contactLens);
+    setRestockDialogOpen(true);
+  };
+
   const handleAddContactLens = () => {
+    if (!canAddContactLenses) {
+      toast.error('You do not have permission to add contact lenses');
+      return;
+    }
     setEditingContactLens(null);
     setIsFormModalOpen(true);
   };
 
-  const handleRefresh = async () => {
-    try {
-      await loadContactLenses();
-      toast.success('Data refreshed successfully');
-    } catch (error) {
-      console.error('Error refreshing data:', error);
-      toast.error('Failed to refresh data');
-    }
+  // Refresh function
+  const handleRefresh = () => {
+    setLoading(true);
+    toast.success('Refreshing contact lenses data...');
   };
 
+  // Export to Excel function
   const handleExportExcel = () => {
     try {
+      // Create Excel-like CSV data
       const headers = [
         'Code',
         'Name',
         'Category',
         'Power',
-        'Original Qty',
-        'Restocked Qty',
+        'Total Qty',
         'Sold Qty',
-        'Available Qty',
+        'Remaining Qty',
+        'Transfer In',
+        'Transfer Out',
+        'Restock Qty',
         'Price (MMK)'
       ];
 
@@ -300,10 +786,12 @@ const ContactLensPage: React.FC = () => {
         lens.name || '',
         lens.category || '',
         lens.power || '',
-        displayQuantity(lens.originalQty),
-        displayQuantity(lens.restockedQty),
+        displayQuantity(originalQtyMap[lens.id || ''] || lens.qty),
         displayQuantity(lens.soldQty),
-        displayQuantity(lens.remainingQty),
+        displayQuantity(lens.qty),
+        displayQuantity(lens.transferInQty),
+        displayQuantity(lens.transferOutQty),
+        displayQuantity(lens.restockQty),
         (lens.price || 0).toLocaleString()
       ]);
 
@@ -341,22 +829,12 @@ const ContactLensPage: React.FC = () => {
       render: (row: ContactLensFormData) => row.power || '-'
     },
     { 
-      key: 'originalQty', 
-      header: 'Original Qty', 
+      key: 'totalQty', 
+      header: 'Total Qty', 
       sortable: true,
       render: (row: ContactLensFormData) => (
         <span className="font-medium text-blue-600 dark:text-blue-400">
-          {displayQuantity(row.originalQty)}
-        </span>
-      )
-    },
-    { 
-      key: 'restockedQty', 
-      header: 'Restocked', 
-      sortable: true,
-      render: (row: ContactLensFormData) => (
-        <span className="font-medium text-purple-600 dark:text-purple-400">
-          {displayQuantity(row.restockedQty)}
+          {displayQuantity(originalQtyMap[row.id || ''] || row.qty)}
         </span>
       )
     },
@@ -371,12 +849,42 @@ const ContactLensPage: React.FC = () => {
       )
     },
     { 
+      key: 'transferInQty', 
+      header: 'Transfer In', 
+      sortable: true,
+      render: (row: ContactLensFormData) => (
+        <span className="font-medium text-green-600 dark:text-green-400">
+          {displayQuantity(row.transferInQty)}
+        </span>
+      )
+    },
+    { 
+      key: 'transferOutQty', 
+      header: 'Transfer Out', 
+      sortable: true,
+      render: (row: ContactLensFormData) => (
+        <span className="font-medium text-purple-600 dark:text-purple-400">
+          {displayQuantity(row.transferOutQty)}
+        </span>
+      )
+    },
+    { 
+      key: 'restockQty', 
+      header: 'Restock Qty', 
+      sortable: true,
+      render: (row: ContactLensFormData) => (
+        <span className="font-medium text-indigo-600 dark:text-indigo-400">
+          {displayQuantity(row.restockQty)}
+        </span>
+      )
+    },
+    { 
       key: 'remainingQty', 
-      header: 'Available Qty', 
+      header: 'Remaining Qty', 
       sortable: true,
       render: (row: ContactLensFormData) => {
-        const isLowStock = row.remainingQty <= 2;
-        const isOutOfStock = row.remainingQty === 0;
+        const isLowStock = row.qty <= 2;
+        const isOutOfStock = row.qty === 0;
         return (
           <span className={`font-medium ${
             isOutOfStock 
@@ -385,7 +893,7 @@ const ContactLensPage: React.FC = () => {
               ? 'text-yellow-600 dark:text-yellow-400' 
               : 'text-green-600 dark:text-green-400'
           }`}>
-            {displayQuantity(row.remainingQty)}
+            {displayQuantity(row.qty)}
             {isOutOfStock && (
               <span className="ml-1 text-xs bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200 px-1 py-0.5 rounded">
                 Out
@@ -406,7 +914,8 @@ const ContactLensPage: React.FC = () => {
       sortable: true, 
       render: (row: ContactLensFormData) => formatCurrency(row.price)
     },
-    {
+    // Conditionally render actions column based on permissions
+    ...(canManageContactLenses ? [{
       key: 'actions',
       header: 'Actions',
       render: (row: ContactLensFormData) => (
@@ -421,39 +930,55 @@ const ContactLensPage: React.FC = () => {
             <Eye size={14} />
           </Button>
           
-          <Button 
-            variant="outline" 
-            size="sm" 
-            onClick={() => handleEditContactLens(row)}
-            className="p-1.5"
-            title="Edit Contact Lens"
-          >
-            <Edit size={14} />
-          </Button>
+          {canEditContactLenses && (
+            <>
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={() => handleEditContactLens(row)}
+                className="p-1.5"
+                title="Edit Contact Lens"
+              >
+                <Edit size={14} />
+              </Button>
+              
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={() => handleRestockContactLens(row)}
+                className="p-1.5 text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50"
+                title="Restock Contact Lens"
+              >
+                <RotateCcw size={14} />
+              </Button>
+            </>
+          )}
           
           <Button 
             variant="outline" 
             size="sm" 
             onClick={() => handleSellContactLens(row)}
             className="p-1.5"
-            disabled={row.remainingQty <= 0}
+            disabled={row.qty <= 0}
             title="Sell Contact Lens"
           >
             <ShoppingCart size={14} />
           </Button>
           
-          <Button 
-            variant="danger" 
-            size="sm" 
-            onClick={() => handleDeleteContactLens(row)}
-            className="p-1.5"
-            title="Delete Contact Lens"
-          >
-            <Trash2 size={14} />
-          </Button>
+          {canDeleteContactLenses && (
+            <Button 
+              variant="danger" 
+              size="sm" 
+              onClick={() => handleDeleteContactLens(row)}
+              className="p-1.5"
+              title="Delete Contact Lens"
+            >
+              <Trash2 size={14} />
+            </Button>
+          )}
         </div>
       ),
-    }
+    }] : [])
   ];
 
   return (
@@ -462,16 +987,30 @@ const ContactLensPage: React.FC = () => {
         <Header title={`Contact Lens Management - ${store?.toUpperCase()}`} />
 
         {/* Store Contact Information */}
-        <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
-          <div className="flex items-center justify-between">
+        {store && (
+          <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center">
+                <Eye className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-2" />
+                <p className="text-blue-800 dark:text-blue-200 text-sm">
+                  <span className="font-medium">{store.toUpperCase()} Store Contact:</span> {getStoreEmail(store)}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Permission Notice for Read-Only Users */}
+        {!canManageContactLenses && (
+          <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4">
             <div className="flex items-center">
-              <Eye className="h-5 w-5 text-blue-600 dark:text-blue-400 mr-2" />
-              <p className="text-blue-800 dark:text-blue-200 text-sm">
-                <span className="font-medium">{store.toUpperCase()} Store Contact:</span> winstore1717@gmail.com
+              <Eye className="h-5 w-5 text-yellow-600 dark:text-yellow-400 mr-2" />
+              <p className="text-yellow-800 dark:text-yellow-200 text-sm">
+                You have read-only access to contact lens data. Contact an administrator for editing permissions.
               </p>
             </div>
           </div>
-        </div>
+        )}
 
         {/* Tabs */}
         <div className="border-b border-gray-200 dark:border-gray-700">
@@ -544,14 +1083,14 @@ const ContactLensPage: React.FC = () => {
                     <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
                       Advanced Search
                     </h3>
-                    {hasActiveFilters() && (
+                    {hasActiveFilters && (
                       <span className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 text-xs px-2 py-1 rounded-full font-medium">
-                        {getActiveFilterCount()} active
+                        {getActiveFilterCount} active
                       </span>
                     )}
                   </div>
                   <div className="flex items-center gap-2">
-                    {hasActiveFilters() && (
+                    {hasActiveFilters && (
                       <Button
                         variant="outline"
                         size="sm"
@@ -652,7 +1191,7 @@ const ContactLensPage: React.FC = () => {
                 <div className="text-sm text-gray-600 dark:text-gray-400">
                   Showing <span className="font-semibold text-gray-900 dark:text-white">{filteredContactLenses.length}</span> of{' '}
                   <span className="font-semibold text-gray-900 dark:text-white">{contactLenses.length}</span> contact lenses
-                  {hasActiveFilters() && (
+                  {hasActiveFilters && (
                     <span className="ml-2 text-blue-600 dark:text-blue-400">(filtered)</span>
                   )}
                 </div>
@@ -679,15 +1218,17 @@ const ContactLensPage: React.FC = () => {
                     Export Excel
                   </Button>
                   
-                  <Button
-                    variant="success"
-                    size="sm"
-                    onClick={handleAddContactLens}
-                    className="flex items-center gap-2 transition-all duration-200 hover:scale-[0.98]"
-                  >
-                    <PlusCircle size={16} />
-                    Add Contact Lens
-                  </Button>
+                  {canAddContactLenses && (
+                    <Button
+                      variant="success"
+                      size="sm"
+                      onClick={handleAddContactLens}
+                      className="flex items-center gap-2 transition-all duration-200 hover:scale-[0.98]"
+                    >
+                      <PlusCircle size={16} />
+                      Add Contact Lens
+                    </Button>
+                  )}
                 </div>
               </div>
             </div>
@@ -711,49 +1252,58 @@ const ContactLensPage: React.FC = () => {
             )}
           </div>
         ) : (
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6">
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
-              <ArrowRightLeft size={20} />
-              Transfer Management
-            </h2>
-            <p className="text-gray-600 dark:text-gray-400">Transfer management functionality will be implemented here.</p>
-          </div>
+          <TransferManagement store={store || ''} />
         )}
         
-        {/* Form Modal */}
-        <FormModal
-          isOpen={isFormModalOpen}
-          onClose={() => {
-            setIsFormModalOpen(false);
-            setEditingContactLens(null);
-          }}
-          title={editingContactLens ? 'Edit Contact Lens' : 'Add Contact Lens'}
-        >
-          <ContactLensForm
-            onSubmit={handleFormSubmit}
-            initialData={editingContactLens || undefined}
-            isSubmitting={isSubmitting}
+        {/* Modals and Dialogs - Only render if user has permissions */}
+        {canAddContactLenses && (
+          <FormModal
+            isOpen={isFormModalOpen}
+            onClose={() => {
+              setIsFormModalOpen(false);
+              setEditingContactLens(null);
+            }}
+            title={editingContactLens ? 'Edit Contact Lens' : 'Add Contact Lens'}
+          >
+            <ContactLensForm
+              onSubmit={handleFormSubmit}
+              initialData={editingContactLens || undefined}
+              isSubmitting={isSubmitting}
+            />
+          </FormModal>
+        )}
+        
+        {canDeleteContactLenses && (
+          <DeleteConfirmDialog
+            isOpen={deleteDialogOpen}
+            onClose={() => setDeleteDialogOpen(false)}
+            itemName={contactLensToDelete?.name || ''}
+            onDelete={confirmDelete}
           />
-        </FormModal>
+        )}
         
-        {/* Delete Confirmation Dialog */}
-        <DeleteConfirmDialog
-          isOpen={deleteDialogOpen}
-          onClose={() => setDeleteDialogOpen(false)}
-          itemName={contactLensToDelete?.name || ''}
-          onDelete={confirmDelete}
-        />
+        {canManageContactLenses && (
+          <SellItemDialog
+            isOpen={sellDialogOpen}
+            onClose={() => setSellDialogOpen(false)}
+            itemName={contactLensToSell?.name || ''}
+            maxQuantity={contactLensToSell?.qty || 0}
+            onSell={confirmSell}
+          />
+        )}
         
-        {/* Sell Item Dialog */}
-        <SellItemDialog
-          isOpen={sellDialogOpen}
-          onClose={() => setSellDialogOpen(false)}
-          itemName={contactLensToSell?.name || ''}
-          maxQuantity={contactLensToSell?.remainingQty || 0}
-          onSell={confirmSell}
-        />
+        {canEditContactLenses && (
+          <RestockDialog
+            isOpen={restockDialogOpen}
+            onClose={() => {
+              setRestockDialogOpen(false);
+              setContactLensToRestock(null);
+            }}
+            itemName={contactLensToRestock?.name || ''}
+            onRestock={confirmRestock}
+          />
+        )}
         
-        {/* Detail View Modal */}
         <FormModal
           isOpen={detailViewOpen}
           onClose={() => setDetailViewOpen(false)}
@@ -787,17 +1337,11 @@ const ContactLensPage: React.FC = () => {
               {/* Quantity Summary */}
               <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4">
                 <h4 className="text-lg font-semibold text-gray-900 dark:text-white mb-3">Quantity Summary</h4>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
+                <div className="grid grid-cols-2 md:grid-cols-6 gap-4 text-center">
                   <div className="space-y-1">
-                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Original Quantity</p>
+                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Total Quantity</p>
                     <p className="text-xl font-bold text-blue-600 dark:text-blue-400">
-                      {displayQuantity(selectedContactLens.originalQty)}
-                    </p>
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Restocked</p>
-                    <p className="text-xl font-bold text-purple-600 dark:text-purple-400">
-                      {displayQuantity(selectedContactLens.restockedQty)}
+                      {displayQuantity(originalQtyMap[selectedContactLens.id || ''] || selectedContactLens.qty)}
                     </p>
                   </div>
                   <div className="space-y-1">
@@ -807,15 +1351,33 @@ const ContactLensPage: React.FC = () => {
                     </p>
                   </div>
                   <div className="space-y-1">
-                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Available Quantity</p>
-                    <p className={`text-xl font-bold ${selectedContactLens.remainingQty <= 2 ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'}`}>
-                      {displayQuantity(selectedContactLens.remainingQty)}
-                      {selectedContactLens.remainingQty <= 2 && selectedContactLens.remainingQty > 0 && (
+                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Transfer In</p>
+                    <p className="text-xl font-bold text-green-600 dark:text-green-400">
+                      {displayQuantity(selectedContactLens.transferInQty)}
+                    </p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Transfer Out</p>
+                    <p className="text-xl font-bold text-purple-600 dark:text-purple-400">
+                      {displayQuantity(selectedContactLens.transferOutQty)}
+                    </p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Restock Quantity</p>
+                    <p className="text-xl font-bold text-indigo-600 dark:text-indigo-400">
+                      {displayQuantity(selectedContactLens.restockQty)}
+                    </p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Remaining Quantity</p>
+                    <p className={`text-xl font-bold ${selectedContactLens.qty <= 2 ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'}`}>
+                      {displayQuantity(selectedContactLens.qty)}
+                      {selectedContactLens.qty <= 2 && selectedContactLens.qty > 0 && (
                         <span className="ml-2 text-xs bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200 px-2 py-1 rounded-full">
                           Low Stock
                         </span>
                       )}
-                      {selectedContactLens.remainingQty === 0 && (
+                      {selectedContactLens.qty === 0 && (
                         <span className="ml-2 text-xs bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200 px-2 py-1 rounded-full">
                           Out of Stock
                         </span>
@@ -832,31 +1394,49 @@ const ContactLensPage: React.FC = () => {
                 </p>
               </div>
               
-              <div className="flex flex-col sm:flex-row justify-end space-y-2 sm:space-y-0 sm:space-x-3 pt-6 border-t">
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setDetailViewOpen(false);
-                    handleEditContactLens(selectedContactLens);
-                  }}
-                  className="transition-all duration-200 hover:scale-[0.98]"
-                >
-                  <Edit size={16} className="mr-2" />
-                  Edit Contact Lens
-                </Button>
-                <Button
-                  variant="primary"
-                  onClick={() => {
-                    setDetailViewOpen(false);
-                    handleSellContactLens(selectedContactLens);
-                  }}
-                  disabled={selectedContactLens.remainingQty <= 0}
-                  className="transition-all duration-200 hover:scale-[0.98]"
-                >
-                  <ShoppingCart size={16} className="mr-2" />
-                  Sell Contact Lens
-                </Button>
-              </div>
+              {/* Action buttons in detail view - only show if user has permissions */}
+              {canManageContactLenses && (
+                <div className="flex flex-col sm:flex-row justify-end space-y-2 sm:space-y-0 sm:space-x-3 pt-6 border-t">
+                  {canEditContactLenses && (
+                    <>
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          setDetailViewOpen(false);
+                          handleEditContactLens(selectedContactLens);
+                        }}
+                        className="transition-all duration-200 hover:scale-[0.98]"
+                      >
+                        <Edit size={16} className="mr-2" />
+                        Edit Contact Lens
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          setDetailViewOpen(false);
+                          handleRestockContactLens(selectedContactLens);
+                        }}
+                        className="transition-all duration-200 hover:scale-[0.98] text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50"
+                      >
+                        <RotateCcw size={16} className="mr-2" />
+                        Restock
+                      </Button>
+                    </>
+                  )}
+                  <Button
+                    variant="primary"
+                    onClick={() => {
+                      setDetailViewOpen(false);
+                      handleSellContactLens(selectedContactLens);
+                    }}
+                    disabled={selectedContactLens.qty <= 0}
+                    className="transition-all duration-200 hover:scale-[0.98]"
+                  >
+                    <ShoppingCart size={16} className="mr-2" />
+                    Sell Contact Lens
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </FormModal>
