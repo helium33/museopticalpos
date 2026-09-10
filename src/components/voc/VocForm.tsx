@@ -6,7 +6,7 @@ import { useAuth } from '../../context/AuthContext';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
 import Select from '../ui/Select';
-import { Store, ItemType, PaymentType, PaymentMethod, generateVocNumber, CustomerType, CustomerGender, formatCurrency, formatPairQuantity, formatYuan, FrameCategory, ContactLensCategory } from '../../lib/utils';
+import { Store, ItemType, PaymentType, PaymentMethod, generateVocNumber, CustomerType, CustomerGender, formatCurrency, formatPairQuantity, formatYuan, FrameCategory, ContactLensCategory, roundToHalf } from '../../lib/utils';
 import { updateCompleteInventoryForVOC, validateVOCInventory } from '../../lib/InventoryUtlis';
 import toast from 'react-hot-toast';
 import { Search, Plus, Minus, Trash2, RefreshCw, Eye, Edit, MapPin, Stethoscope, ChevronLeft, ChevronRight, DollarSign, Percent, Calendar, AlertTriangle, CheckCircle, Filter, X, FileText, Save, User, ChevronUp, ChevronDown, Glasses, Sun, Contact, Package, ShoppingCart, Zap, Star, Sparkles, Heart, CheckCircle2 } from 'lucide-react';
@@ -119,6 +119,10 @@ const LENS_CATEGORIES = {
     'BB', 'MC', 'CR', 'BBPG', 'PG', 'multifocal', 'progressive'
   ]
 };
+
+// Quantities are kept in half steps, so comparisons need a little slack
+// to survive floating point drift (e.g. 1.5 - 1 - 0.5 is not exactly 0)
+const QUANTITY_TOLERANCE = 0.0001;
 
 // Animation keyframes for smooth transitions
 const fadeInUp = {
@@ -601,15 +605,27 @@ const VocForm: React.FC<VocFormProps> = ({ store, onSuccess }) => {
     );
   };
 
-  // Helper function to get real-time available quantity for an item
-  const getAvailableQuantity = (itemId: string): number => {
+  // Smallest sellable unit per item type.
+  // Lenses are stocked as pairs, so a single side (0.5) is a valid quantity.
+  // Frames and accessories are only ever sold as whole pieces.
+  const getQuantityStep = (type: ItemType): number =>
+    type === 'Lens' || type === 'Contact Lens' ? 0.5 : 1;
+
+  // Helper function to get real-time available quantity for an item.
+  // excludeIndex leaves one row of the current VOC out of the calculation - used when
+  // editing that row's quantity so it is not counted as competing with itself for stock.
+  const getAvailableQuantity = (itemId: string, excludeIndex?: number): number => {
     const item = items.find(i => i.id === itemId);
     if (!item) return 0;
 
     // Calculate how much is already selected in the current VOC
     // Both sold and error quantities consume inventory, so we use total quantity
     const selectedQuantity = selectedItems
-      .filter(selectedItem => selectedItem.id === itemId && !selectedItem.isFOC) // Exclude FOC items from stock calculation
+      .filter((selectedItem, selectedIndex) =>
+        selectedItem.id === itemId &&
+        !selectedItem.isFOC && // Exclude FOC items from stock calculation
+        selectedIndex !== excludeIndex
+      )
       .reduce((sum, selectedItem) => {
         // Total quantity includes both sold and error quantities
         // This is correct because both consume physical inventory
@@ -621,12 +637,20 @@ const VocForm: React.FC<VocFormProps> = ({ store, onSuccess }) => {
   };
 
   // Helper function to check if adding quantity would exceed available stock
-  const canAddQuantity = (itemId: string, quantityToAdd: number, isFOC: boolean = false): boolean => {
+  const canAddQuantity = (itemId: string, quantityToAdd: number, isFOC: boolean = false, excludeIndex?: number): boolean => {
     // FOC items don't affect stock, so always allow them
     if (isFOC) return true;
     
-    const availableQty = getAvailableQuantity(itemId);
-    return availableQty >= quantityToAdd;
+    const availableQty = getAvailableQuantity(itemId, excludeIndex);
+    // Small tolerance so half steps are never rejected by floating point drift
+    return availableQty + QUANTITY_TOLERANCE >= quantityToAdd;
+  };
+
+  // Largest quantity that can go on the VOC right now, in whole steps for the item type
+  const getMaxAddableQuantity = (itemId: string, type: ItemType, excludeIndex?: number): number => {
+    const step = getQuantityStep(type);
+    const availableQty = getAvailableQuantity(itemId, excludeIndex);
+    return Math.floor((availableQty + QUANTITY_TOLERANCE) / step) * step;
   };
 
   // Enhanced category display with proper icons and formatting
@@ -937,12 +961,18 @@ const VocForm: React.FC<VocFormProps> = ({ store, onSuccess }) => {
     
     const price = selectedPrice || item.price || 0;
     const priceLabel = selectedPriceLabel || 'Default';
+
+    // Start at one full unit, but never above what is left in stock.
+    // A lens with only half a pair remaining is added as 0.5 instead of 1.
+    const step = getQuantityStep(selectedItemType);
+    const maxAddable = getMaxAddableQuantity(item.id, selectedItemType);
+    const initialQuantity = maxAddable > 0 ? Math.min(1, maxAddable) : step;
     
     const newItem: FormVocItem = {
       type: selectedItemType,
       id: item.id || '',
       name: item.name || item.code || 'Unknown Item',
-      quantity: 1,
+      quantity: initialQuantity,
       price: price || 0,
       selectedPriceLabel: priceLabel || 'Default',
       category: item.category || '',
@@ -998,22 +1028,26 @@ const VocForm: React.FC<VocFormProps> = ({ store, onSuccess }) => {
   // Handle quantity change
   const handleQuantityChange = (index: number, newQuantity: number) => {
     const currentItem = selectedItems[index];
+    // Quantities move in half steps so a single lens side can be sold
+    const quantity = roundToHalf(newQuantity);
     
-    if (newQuantity < 0) {
+    if (quantity < 0) {
       toast.error('Quantity cannot be negative');
       return;
     }
 
-    // Check stock availability for non-FOC items
-    if (!currentItem.isFOC && !canAddQuantity(currentItem.id, newQuantity)) {
-      const availableQty = getAvailableQuantity(currentItem.id);
-      toast.error(`Only ${availableQty} pieces available for ${currentItem.name}`);
+    // Check stock availability for non-FOC items. This row is excluded from the
+    // stock calculation because its quantity is being replaced, not added on top
+    // of itself - otherwise the last piece in stock could never be changed to 0.5.
+    if (!currentItem.isFOC && !canAddQuantity(currentItem.id, quantity, false, index)) {
+      const availableQty = getAvailableQuantity(currentItem.id, index);
+      toast.error(`Only ${roundToHalf(availableQty)} pieces available for ${currentItem.name}`);
       return;
     }
 
     update(index, {
       ...currentItem,
-      quantity: newQuantity
+      quantity
     });
   };
 
@@ -1129,11 +1163,16 @@ const VocForm: React.FC<VocFormProps> = ({ store, onSuccess }) => {
         toast.success(`✨ Updated lens details for ${currentItem.name}`);
       } else {
         // Add new item to VOC with custom details
+        // Match the quantity to what is actually left - half a pair stays 0.5
+        const lensStep = getQuantityStep('Lens');
+        const lensMaxAddable = getMaxAddableQuantity(selectedLensForDetails.id, 'Lens');
+        const lensQuantity = lensMaxAddable > 0 ? Math.min(1, lensMaxAddable) : lensStep;
+
         const newItem: FormVocItem = {
           type: 'Lens' as ItemType,
           id: selectedLensForDetails.id || '',
           name: selectedLensForDetails.name || selectedLensForDetails.code || 'Unknown Lens',
-          quantity: 1,
+          quantity: lensQuantity,
           price: selectedLensForDetails.price || 0,
           selectedPriceLabel: 'Default',
           category: selectedLensForDetails.category || '',
@@ -1319,14 +1358,6 @@ const VocForm: React.FC<VocFormProps> = ({ store, onSuccess }) => {
           toast.error('Error category is required when items have errors');
           return;
         }
-      }
-
-      // Validate accessories requirement - MUST have at least 3 accessory items
-      const accessoryItems = data.items.filter((item: any) => item.type === 'Accessories');
-      if (accessoryItems.length < 3) {
-        console.warn('VOC creation failed: At least 3 accessories required');
-        toast.error('VOC ဖြတ်ရန် Accessories အနည်းဆုံး ၃ခု မဖြစ်မနေ ရွေးချယ်ရမည်။');
-        return;
       }
 
       // FIXED: Process items with correct error quantity pricing logic
@@ -2730,7 +2761,8 @@ Inventory updated successfully!`, {
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 mb-6">
                   {paginatedItems.map((item, index) => {
                     const availableQty = getAvailableQuantity(item.id);
-                    const isOutOfStock = availableQty === 0;
+                    // Still sellable while at least one step remains - half a pair counts for lenses
+                    const isOutOfStock = availableQty + QUANTITY_TOLERANCE < getQuantityStep(selectedItemType);
                     const isLowStock = availableQty > 0 && availableQty <= 5;
 
                     return (
@@ -3073,38 +3105,11 @@ Inventory updated successfully!`, {
                   {(() => {
                     const accessoryCount = selectedItems.filter(item => item.type === 'Accessories').length;
                     return (
-                      <div className={`flex items-center gap-2 px-3 py-1 rounded-full ${
-                        accessoryCount >= 3 
-                          ? 'bg-green-100 dark:bg-green-900/30' 
-                          : accessoryCount === 0
-                          ? 'bg-red-100 dark:bg-red-900/30 animate-pulse'
-                          : 'bg-orange-100 dark:bg-orange-900/30 animate-pulse'
-                      }`}>
-                        <Package className={`h-4 w-4 ${
-                          accessoryCount >= 3 
-                            ? 'text-green-600 dark:text-green-400' 
-                            : accessoryCount === 0
-                            ? 'text-red-600 dark:text-red-400'
-                            : 'text-orange-600 dark:text-orange-400'
-                        }`} />
-                        <span className={`text-sm font-medium ${
-                          accessoryCount >= 3 
-                            ? 'text-green-700 dark:text-green-300' 
-                            : accessoryCount === 0
-                            ? 'text-red-700 dark:text-red-300'
-                            : 'text-orange-700 dark:text-orange-300'
-                        }`}>
-                          Accessories: {accessoryCount}/3 {accessoryCount >= 3 ? '✅' : '❌'}
+                      <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-blue-100 dark:bg-blue-900/30">
+                        <Package className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                        <span className="text-sm font-medium text-blue-700 dark:text-blue-300">
+                          Accessories: {accessoryCount}
                         </span>
-                        {accessoryCount < 3 && (
-                          <span className={`text-xs ${
-                            accessoryCount === 0 
-                              ? 'text-red-600 dark:text-red-400 font-semibold' 
-                              : 'text-orange-600 dark:text-orange-400'
-                          }`}>
-                            {accessoryCount === 0 ? '(Required!)' : `(need ${3 - accessoryCount} more)`}
-                          </span>
-                        )}
                       </div>
                     );
                   })()}
@@ -3271,7 +3276,7 @@ Inventory updated successfully!`, {
                           type="button"
                           variant="outline"
                           size="sm"
-                          onClick={() => handleQuantityChange(index, Math.max(0, item.quantity - 1))}
+                          onClick={() => handleQuantityChange(index, Math.max(0, item.quantity - getQuantityStep(item.type)))}
                           className="h-8 w-8 p-0 transition-all duration-200 hover:scale-110"
                         >
                           <Minus className="h-3 w-3" />
@@ -3282,13 +3287,13 @@ Inventory updated successfully!`, {
                           onChange={(e) => handleQuantityChange(index, parseFloat(e.target.value) || 0)}
                           className="w-16 text-center text-sm h-8"
                           min="0"
-                          step="0.5"
+                          step={getQuantityStep(item.type)}
                         />
                         <Button
                           type="button"
                           variant="outline"
                           size="sm"
-                          onClick={() => handleQuantityChange(index, item.quantity + 1)}
+                          onClick={() => handleQuantityChange(index, item.quantity + getQuantityStep(item.type))}
                           className="h-8 w-8 p-0 transition-all duration-200 hover:scale-110"
                         >
                           <Plus className="h-3 w-3" />
@@ -3828,21 +3833,21 @@ Inventory updated successfully!`, {
                 <Button
                   type="submit"
                   className={`min-w-[140px] shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200 text-white ${
-                    selectedItems.filter(item => item.type === 'Accessories').length < 3
+                    selectedItems.length === 0
                       ? 'bg-gray-400 cursor-not-allowed'
                       : 'bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 hover:from-blue-700 hover:via-purple-700 hover:to-indigo-700'
                   }`}
-                  disabled={loading || selectedItems.filter(item => item.type === 'Accessories').length < 3}
+                  disabled={loading || selectedItems.length === 0}
                 >
                   {loading ? (
                     <div className="flex items-center justify-center">
                       <div className="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full mr-2"></div>
                       Creating...
                     </div>
-                  ) : selectedItems.filter(item => item.type === 'Accessories').length < 3 ? (
+                  ) : selectedItems.length === 0 ? (
                     <div className="flex items-center">
                       <Package className="h-4 w-4 mr-2" />
-                      Need {3 - selectedItems.filter(item => item.type === 'Accessories').length} More ACC
+                      Add an Item
                     </div>
                   ) : (
                     <div className="flex items-center">
