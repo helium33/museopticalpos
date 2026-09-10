@@ -838,7 +838,8 @@ const VocForm: React.FC<VocFormProps> = ({ store, onSuccess }) => {
         'Hnin Nu Wai',
         'Nan Ngin',
         'Aye Nadi Htun',
-        "Yadanar"
+        "Yadanar",
+        'Yar Yar Khan'
       ];
 
       const eyeTestStaff = [
@@ -846,6 +847,7 @@ const VocForm: React.FC<VocFormProps> = ({ store, onSuccess }) => {
         'Yadnar',
         'Hnin Nu Wai',
         'Kkt',
+        'Yar Yar Khan',
         'other shop'
       ];
 
@@ -899,12 +901,14 @@ const VocForm: React.FC<VocFormProps> = ({ store, onSuccess }) => {
           'Khaing Moe Oo',
           'Hnin Nu Wai',
           'Nan Ngin',
-          'Aye Nadi Htun'
+          'Aye Nadi Htun',
+          'Yar Yar Khan'
         ],
         eyeTestStaff: [
           'Ko Kyaw Tint',
           'Yadnar',
-          'Hnin Nu Wai'
+          'Hnin Nu Wai',
+          'Yar Yar Khan'
         ],
         fittingStaff: [
           'Ko Chit Min Aung',
