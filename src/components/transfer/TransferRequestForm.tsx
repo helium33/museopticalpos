@@ -6,7 +6,7 @@ import { useAuth } from '../../context/AuthContext';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
 import Select from '../ui/Select';
-import TextArea from '../ui/TextArea';
+import TextArea from '../ui/Textarea';
 import toast from 'react-hot-toast';
 import { Package, Search, AlertCircle } from 'lucide-react';
 

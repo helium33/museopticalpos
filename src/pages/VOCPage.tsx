@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { collection, deleteDoc, doc, getDocs, updateDoc, query, where } from 'firebase/firestore'
 import { db } from '../lib/firebase'
-import { VOC } from '../type/voc'
+import { VOC } from '../type/Voc'
 import VocTable from '../components/voc/VocTable'
 import { returnInventoryForVoc, returnVOCItemsToInventory, calculateSoldQuantity, calculateErrorQuantity } from '../lib/InventoryCalculation'
 import VOCTestData from '../components/voc/VOCTestData'

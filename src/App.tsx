@@ -32,7 +32,7 @@ const DepositsPage = React.lazy(() => import('./pages/deposits/DepositsPage'));
 const VocPage = React.lazy(() => import('./pages/voc/VocPage'));
 const SalesDataPage = React.lazy(() => import('./pages/SalesDataPage'));
 const DataEntryPage = React.lazy(() => import('./pages/DataEntry/DataEntryPage'));
-const TransfersPage = React.lazy(() => import('./pages/transfers/TransfersPage'));
+const TransfersPage = React.lazy(() => import('./pages/Transfers/TransfersPage'));
 const TransactionsPage = React.lazy(() => import('./pages/Transcation/TranscationPage'));
 const StaffDashboard = React.lazy(() => import('./pages/StaffDashboard'));
 const YangonFramePage = React.lazy(() => import('./pages/yangon-office/YangonFramePage'));

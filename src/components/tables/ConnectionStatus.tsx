@@ -1,7 +1,7 @@
 // src/components/ConnectionStatus.tsx
 import { useEffect, useState } from 'react';
 import { getFirestoreStatus } from '../../lib/firebase';
-import { useNetworkStatus } from '../../hooks/useNetworkStatus';
+import { useNetworkStatus } from '../../hooks/useNetworkstatus';
 
 export const ConnectionStatus = () => {
   const isBrowserOnline = useNetworkStatus();

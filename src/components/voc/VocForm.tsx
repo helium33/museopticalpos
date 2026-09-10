@@ -18,7 +18,7 @@ import {
   calculateVocAmount, 
   validateErrorQuantity 
 } from '../../lib/InventoryCalculation';
-import { VocItem } from '../../type/voc';
+import { VocItem } from '../../type/Voc';
 
 interface VocFormProps {
   store: Store;

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { VocItem } from '../../type/voc';
+import { VocItem } from '../../type/Voc';
 // import { calculateSoldQuantity, calculateErrorQuantity } from '../../lib/InventoryCalculation';
 import { ChevronDown, ChevronRight, Eye, MapPin, Stethoscope, Percent, AlertTriangle, Package, ShoppingCart } from 'lucide-react';
 import { calculateErrorQuantity, calculateSoldQuantity } from '../../lib/InventoryCalculation';

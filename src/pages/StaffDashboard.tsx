@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-// import StaffVocDashboard from '../components/dashboard/StaffVocDashboard';
+// import StaffVocDashboard from '../components/Dashboard/StaffVocDashboard';
 import { Store } from '../lib/utils';
 import Select from '../components/ui/Select';
 import { BarChart3, Users, Eye, Wrench } from 'lucide-react';

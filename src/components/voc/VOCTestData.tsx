@@ -1,5 +1,5 @@
 import React from 'react';
-import { VOC, VocItem } from '../../type/voc';
+import { VOC, VocItem } from '../../type/Voc';
 import { VOCTable } from './VocTable';
 import { createTestVocItems } from '../../lib/vocQuantityUtils';
 
