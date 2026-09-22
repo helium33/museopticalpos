@@ -20,5 +20,11 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  /* Dead files kept for reference only - neither is imported anywhere and both
+     contain syntax errors that would fail the production build. */
+  "exclude": [
+    "src/components/voc/VocForm_backup.tsx",
+    "src/pages/voc/VocMangemnet.tsx"
+  ]
 }

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ChevronDown, AlertTriangle, X } from 'lucide-react';
-import { ERROR_CATEGORIES, ErrorCategory } from '../../type/voc';
+import { ERROR_CATEGORIES, ErrorCategory } from '../../type/Voc';
 import { VocItem } from '../../type/Voc';
 
 interface ErrorDropdownProps {

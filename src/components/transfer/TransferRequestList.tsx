@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, where, orderBy, onSnapshot, doc, updateDoc, addDoc, serverTimestamp, getDocs } from 'firebase/firestore';
+import { collection, query, where, orderBy, onSnapshot } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
-import { TransferRequest } from '../../types/transfer';
+import { completeTransfer, rejectTransfer } from '../../lib/transferInventory';
+import { TransferRequest } from '../../type/transfer';
 import { useAuth } from '../../context/AuthContext';
 import { usePermissions } from '../../hooks/useSidebarItem';
 import Button from '../../components/ui/Button';
@@ -130,181 +131,6 @@ const TransferRequestList: React.FC<TransferRequestListProps> = ({ store, view }
     }
   };
 
-  const handleTransferQuantities = async (transfer: TransferRequest) => {
-    try {
-      const collectionName = transfer.itemType;
-      
-      // Get all source items with matching name (not just code)
-      const sourceItemQuery = query(
-        collection(db, collectionName),
-        where('store', '==', transfer.fromStore),
-        where('name', '==', transfer.itemName) // Match by name instead of code
-      );
-      const sourceSnapshot = await getDocs(sourceItemQuery);
-      
-      if (sourceSnapshot.empty) {
-        throw new Error(`Source item "${transfer.itemName}" not found in ${transfer.fromStore} store`);
-      }
-
-      // Calculate total available quantity for this name
-      let totalAvailableQty = 0;
-      const sourceItems: any[] = [];
-      
-      sourceSnapshot.docs.forEach(doc => {
-        const data = doc.data();
-        const qty = Number(data.qty) || 0;
-        totalAvailableQty += qty;
-        sourceItems.push({
-          id: doc.id,
-          data,
-          qty
-        });
-      });
-
-      if (totalAvailableQty < transfer.requestedQuantity) {
-        throw new Error(`Insufficient quantity for "${transfer.itemName}". Available: ${totalAvailableQty}, Requested: ${transfer.requestedQuantity}`);
-      }
-
-      // Check if item with same name exists in destination store
-      const destItemQuery = query(
-        collection(db, collectionName),
-        where('store', '==', transfer.toStore),
-        where('name', '==', transfer.itemName) // Match by name
-      );
-      const destSnapshot = await getDocs(destItemQuery);
-
-      let remainingToTransfer = transfer.requestedQuantity;
-
-      // Deduct from source items (starting with items that have the most quantity)
-      const sortedSourceItems = sourceItems
-        .filter(item => item.qty > 0)
-        .sort((a, b) => b.qty - a.qty);
-
-      for (const sourceItem of sortedSourceItems) {
-        if (remainingToTransfer <= 0) break;
-
-        const deductFromThis = Math.min(sourceItem.qty, remainingToTransfer);
-        const newSourceQty = sourceItem.qty - deductFromThis;
-        const sourceTransferOutQty = (sourceItem.data.transferOutQty || 0) + deductFromThis;
-        const sourceTotalQty = Math.max(0, (sourceItem.data.totalQty || sourceItem.qty) - deductFromThis);
-        
-        await updateDoc(doc(db, collectionName, sourceItem.id), {
-          qty: newSourceQty,
-          totalQty: sourceTotalQty,
-          transferOutQty: sourceTransferOutQty,
-          updatedAt: serverTimestamp()
-        });
-
-        // Create transfer history for source
-        await addDoc(collection(db, 'itemHistory'), {
-          itemId: sourceItem.id,
-          itemType: transfer.itemType,
-          action: 'transfer_out',
-          store: transfer.fromStore,
-          performedBy: user?.email || '',
-          performedAt: serverTimestamp(),
-          changes: [
-            {
-              field: 'qty',
-              oldValue: String(sourceItem.qty),
-              newValue: String(newSourceQty)
-            }
-          ],
-          notes: `Transferred ${deductFromThis} units to ${transfer.toStore.toUpperCase()} store (Transfer ID: ${transfer.id})`
-        });
-
-        remainingToTransfer -= deductFromThis;
-      }
-
-      // Handle destination - find item with exact name match
-      let destinationItem = null;
-      for (const docSnap of destSnapshot.docs) {
-        const data = docSnap.data();
-        if (data.name === transfer.itemName) {
-          destinationItem = {
-            id: docSnap.id,
-            data
-          };
-          break;
-        }
-      }
-
-      if (destinationItem) {
-        // Update existing item with same name
-        const destCurrentQty = Number(destinationItem.data.qty) || 0;
-        const newDestQty = destCurrentQty + transfer.requestedQuantity;
-        const destTransferInQty = (destinationItem.data.transferInQty || 0) + transfer.requestedQuantity;
-        const destTotalQty = (destinationItem.data.totalQty || destCurrentQty) + transfer.requestedQuantity;
-
-        await updateDoc(doc(db, collectionName, destinationItem.id), {
-          qty: newDestQty,
-          totalQty: destTotalQty,
-          transferInQty: destTransferInQty,
-          updatedAt: serverTimestamp()
-        });
-
-        await addDoc(collection(db, 'itemHistory'), {
-          itemId: destinationItem.id,
-          itemType: transfer.itemType,
-          action: 'transfer_in',
-          store: transfer.toStore,
-          performedBy: user?.email || '',
-          performedAt: serverTimestamp(),
-          changes: [
-            {
-              field: 'qty',
-              oldValue: String(destCurrentQty),
-              newValue: String(newDestQty)
-            }
-          ],
-          notes: `Received ${transfer.requestedQuantity} units from ${transfer.fromStore.toUpperCase()} store (Transfer ID: ${transfer.id})`
-        });
-      } else {
-        // Create new item in destination store using the first source item as template
-        const templateItem = sortedSourceItems[0];
-        const newItem = {
-          ...templateItem.data,
-          qty: transfer.requestedQuantity,
-          store: transfer.toStore,
-          originalQty: transfer.requestedQuantity,
-          totalQty: transfer.requestedQuantity,
-          soldQty: 0,
-          transferInQty: transfer.requestedQuantity,
-          transferOutQty: 0,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
-        };
-
-        // Remove the old document ID
-        delete newItem.id;
-        
-        const newDocRef = await addDoc(collection(db, collectionName), newItem);
-
-        await addDoc(collection(db, 'itemHistory'), {
-          itemId: newDocRef.id,
-          itemType: transfer.itemType,
-          action: 'transfer_in',
-          store: transfer.toStore,
-          performedBy: user?.email || '',
-          performedAt: serverTimestamp(),
-          changes: [
-            {
-              field: 'qty',
-              oldValue: '0',
-              newValue: String(transfer.requestedQuantity)
-            }
-          ],
-          notes: `Created new item "${transfer.itemName}" with ${transfer.requestedQuantity} units from ${transfer.fromStore.toUpperCase()} store (Transfer ID: ${transfer.id})`
-        });
-      }
-
-      toast.success(`Successfully transferred ${transfer.requestedQuantity} units of "${transfer.itemName}" from ${transfer.fromStore.toUpperCase()} to ${transfer.toStore.toUpperCase()}`);
-    } catch (error) {
-      console.error('Error transferring quantities:', error);
-      throw error;
-    }
-  };
-
   const canManageTransfer = (transfer: TransferRequest) => {
     switch (transfer.itemType) {
       case 'frames':
@@ -318,58 +144,193 @@ const TransferRequestList: React.FC<TransferRequestListProps> = ({ store, view }
     }
   };
 
-  const handleAction = async (transferId: string, action: 'approve' | 'reject' | 'complete', actionNotes?: string) => {
-    const transfer = transfers.find(t => t.id === transferId);
-    if (!transfer || !canManageTransfer(transfer)) {
+  // Nothing has moved yet in either state, so both can still be confirmed or rejected.
+  // 'approved' only exists on requests approved under the old two-step flow.
+  // e.g. "RB5228 2012 · Side 92031 - RayBan 5228"
+  const describeItem = (transfer: TransferRequest) => {
+    const ids = [transfer.itemCode, transfer.itemSideCode && `Side ${transfer.itemSideCode}`].filter(Boolean).join(' · ');
+    return ids ? `${ids} - ${transfer.itemName}` : transfer.itemName;
+  };
+
+  const isOpenTransfer = (transfer: TransferRequest) =>
+    transfer.status === 'pending' || transfer.status === 'approved';
+
+  // The store being taken from confirms - stock moves to the requesting store right away
+  const handleConfirm = async (transfer: TransferRequest) => {
+    if (!transfer.id || !canManageTransfer(transfer)) {
       toast.error('You do not have permission to manage this transfer');
       return;
     }
 
-    setActionLoading(transferId);
+    const from = transfer.fromStore.toUpperCase();
+    const to = transfer.toStore.toUpperCase();
+    const proceed = window.confirm(
+      `${describeItem(transfer)} × ${transfer.requestedQuantity}\n${from} → ${to}\n\n` +
+      `Confirm နှိပ်လိုက်တာနဲ့ ${from} stock ကနေ နုတ်ပြီး ${to} stock ထဲ ချက်ချင်းဝင်သွားပါမယ်။`
+    );
+    if (!proceed) return;
+
+    setActionLoading(transfer.id);
     try {
-      const transferRef = doc(db, 'transfers', transferId);
-      const updateData: any = {
-        status: action === 'approve' ? 'approved' : action === 'reject' ? 'rejected' : 'completed',
-        [`${action}dBy`]: user?.email,
-        [`${action}dAt`]: serverTimestamp()
-      };
-
-      if (actionNotes && actionNotes.trim()) {
-        updateData.notes = actionNotes.trim();
-      }
-
-      if (action === 'complete') {
-        await handleTransferQuantities(transfer);
-        updateData.transferredQuantity = transfer.requestedQuantity;
-      }
-
-      await updateDoc(transferRef, updateData);
-
-      const historyData: any = {
-        transferId,
-        action: action === 'approve' ? 'approved' : action === 'reject' ? 'rejected' : 'completed',
-        performedBy: user?.email || '',
-        performedAt: serverTimestamp(),
-        newStatus: updateData.status
-      };
-
-      if (actionNotes && actionNotes.trim()) {
-        historyData.notes = actionNotes.trim();
-      }
-
-      await addDoc(collection(db, 'transferHistory'), historyData);
-
-      const actionText = action === 'approve' ? 'approved' : action === 'reject' ? 'rejected' : 'completed';
-      toast.success(`Transfer ${actionText} successfully`);
+      await completeTransfer(transfer, user?.email || '');
+      toast.success(`${transfer.requestedQuantity} × ${describeItem(transfer)} moved from ${from} to ${to}`);
+      setDetailModalOpen(false);
     } catch (error) {
-      console.error(`Error ${action}ing transfer:`, error);
-      toast.error(`Failed to ${action} transfer: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error('Error confirming transfer:', error);
+      toast.error(`Failed to confirm transfer: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       setActionLoading(null);
     }
   };
 
+  const handleReject = async (transfer: TransferRequest) => {
+    if (!transfer.id || !canManageTransfer(transfer)) {
+      toast.error('You do not have permission to manage this transfer');
+      return;
+    }
+
+    setActionLoading(transfer.id);
+    try {
+      await rejectTransfer(transfer, user?.email || '');
+      toast.success('Transfer rejected');
+      setDetailModalOpen(false);
+    } catch (error) {
+      console.error('Error rejecting transfer:', error);
+      toast.error(`Failed to reject transfer: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  // Status in plain words, so a request nobody has confirmed doesn't read as finished
+  const getStatusLabel = (status: string) => {
+    switch (status) {
+      case 'pending':
+        return 'PENDING · Confirm စောင့်';
+      case 'approved':
+        return 'APPROVED · မရောက်သေး';
+      case 'completed':
+        return 'COMPLETED · ရောက်ပြီ';
+      case 'rejected':
+        return 'REJECTED';
+      default:
+        return status.toUpperCase();
+    }
+  };
+
   const columns = [
+    {
+      key: 'itemName',
+      header: 'Item Name',
+      sortable: true,
+      render: (row: TransferRequest) => (
+        <div className="max-w-xs">
+          <div className="truncate font-medium text-blue-600 dark:text-blue-400" title={row.itemName}>
+            {row.itemName}
+          </div>
+          {/* Item code, so models sharing a name can be told apart at a glance */}
+          {row.itemCode && (
+            <div className="font-mono text-xs text-gray-600 dark:text-gray-400">{row.itemCode}</div>
+          )}
+        </div>
+      )
+    },
+    {
+      key: 'itemSideCode',
+      header: 'Side Code',
+      sortable: true,
+      render: (row: TransferRequest) => row.itemSideCode ? (
+        <span className="inline-flex items-center px-2 py-0.5 rounded-md font-mono text-sm font-bold bg-amber-100 text-amber-900 dark:bg-amber-900/60 dark:text-amber-100">
+          {row.itemSideCode}
+        </span>
+      ) : (
+        <span className="text-gray-400">—</span>
+      )
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      sortable: true,
+      render: (row: TransferRequest) => (
+        <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(row.status)}`}>
+          {getStatusIcon(row.status)}
+          {getStatusLabel(row.status)}
+        </span>
+      )
+    },
+    {
+      key: 'actions',
+      header: 'Actions',
+      render: (row: TransferRequest) => (
+        <div className="flex items-center gap-1">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setSelectedTransfer(row);
+              setDetailModalOpen(true);
+            }}
+            className="p-1.5"
+            title="View Details"
+          >
+            <Eye size={14} />
+          </Button>
+
+          {canManageTransfer(row) && row.fromStore === store && isOpenTransfer(row) && (
+            <>
+              <Button
+                variant="success"
+                size="sm"
+                onClick={() => handleConfirm(row)}
+                disabled={actionLoading === row.id}
+                className="px-2 py-1.5 flex items-center gap-1"
+                title="Confirm - the items move to the requesting store immediately"
+              >
+                {actionLoading === row.id ? (
+                  <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white"></div>
+                ) : (
+                  <Check size={14} />
+                )}
+                Confirm
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={() => handleReject(row)}
+                disabled={actionLoading === row.id}
+                className="p-1.5"
+                title="Reject Transfer"
+              >
+                {actionLoading === row.id ? (
+                  <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white"></div>
+                ) : (
+                  <X size={14} />
+                )}
+              </Button>
+            </>
+          )}
+
+          {/* Approved under the old two-step flow but never received - let the requester finish it */}
+          {canManageTransfer(row) && row.toStore === store && row.status === 'approved' && (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => handleConfirm(row)}
+              disabled={actionLoading === row.id}
+              className="px-2 py-1.5 flex items-center gap-1"
+              title="Receive - move the items into this store"
+            >
+              {actionLoading === row.id ? (
+                <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white"></div>
+              ) : (
+                <CheckCircle size={14} />
+              )}
+              Receive
+            </Button>
+          )}
+        </div>
+      )
+    },
     {
       key: 'itemCode',
       header: 'Item Code',
@@ -377,16 +338,6 @@ const TransferRequestList: React.FC<TransferRequestListProps> = ({ store, view }
       render: (row: TransferRequest) => (
         <div className="font-medium text-gray-900 dark:text-white">
           {row.itemCode}
-        </div>
-      )
-    },
-    {
-      key: 'itemName',
-      header: 'Item Name',
-      sortable: true,
-      render: (row: TransferRequest) => (
-        <div className="max-w-xs truncate font-medium text-blue-600 dark:text-blue-400" title={row.itemName}>
-          {row.itemName}
         </div>
       )
     },
@@ -410,14 +361,14 @@ const TransferRequestList: React.FC<TransferRequestListProps> = ({ store, view }
               <div className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">
                 FROM: {row.fromStore.toUpperCase()}
               </div>
-              <div className="text-xs text-gray-500 mt-1">ပို့တဲ့ဆိုင်</div>
+              <div className="text-xs text-gray-500 mt-1">ယူခံရတဲ့ဆိုင်</div>
             </div>
             <ArrowRight className="h-5 w-5 text-blue-500" />
             <div className="text-center">
               <div className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">
                 TO: {row.toStore.toUpperCase()}
               </div>
-              <div className="text-xs text-gray-500 mt-1">လက်ခံတဲ့ဆိုင်</div>
+              <div className="text-xs text-gray-500 mt-1">ယူတဲ့ဆိုင်</div>
             </div>
           </div>
           
@@ -425,12 +376,12 @@ const TransferRequestList: React.FC<TransferRequestListProps> = ({ store, view }
           <div className="text-center">
             {row.fromStore === store && (
               <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200">
-                ⬆ Outgoing Request
+                ⬆ ဒီဆိုင်ကပေးရမည်
               </span>
             )}
             {row.toStore === store && (
               <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
-                ⬇ Incoming Request
+                ⬇ ဒီဆိုင်ကိုဝင်မည်
               </span>
             )}
           </div>
@@ -494,17 +445,6 @@ const TransferRequestList: React.FC<TransferRequestListProps> = ({ store, view }
       )
     },
     {
-      key: 'status',
-      header: 'Status',
-      sortable: true,
-      render: (row: TransferRequest) => (
-        <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(row.status)}`}>
-          {getStatusIcon(row.status)}
-          {row.status.toUpperCase()}
-        </span>
-      )
-    },
-    {
       key: 'requestedAt',
       header: 'Requested',
       sortable: true,
@@ -514,76 +454,6 @@ const TransferRequestList: React.FC<TransferRequestListProps> = ({ store, view }
           <div className="text-xs">
             {row.requestedAt.toLocaleTimeString()}
           </div>
-        </div>
-      )
-    },
-    {
-      key: 'actions',
-      header: 'Actions',
-      render: (row: TransferRequest) => (
-        <div className="flex items-center gap-1">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setSelectedTransfer(row);
-              setDetailModalOpen(true);
-            }}
-            className="p-1.5"
-            title="View Details"
-          >
-            <Eye size={14} />
-          </Button>
-
-          {canManageTransfer(row) && row.fromStore === store && row.status === 'pending' && (
-            <>
-              <Button
-                variant="success"
-                size="sm"
-                onClick={() => handleAction(row.id!, 'approve')}
-                disabled={actionLoading === row.id}
-                className="p-1.5"
-                title="Approve Transfer"
-              >
-                {actionLoading === row.id ? (
-                  <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white"></div>
-                ) : (
-                  <Check size={14} />
-                )}
-              </Button>
-              <Button
-                variant="danger"
-                size="sm"
-                onClick={() => handleAction(row.id!, 'reject')}
-                disabled={actionLoading === row.id}
-                className="p-1.5"
-                title="Reject Transfer"
-              >
-                {actionLoading === row.id ? (
-                  <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white"></div>
-                ) : (
-                  <X size={14} />
-                )}
-              </Button>
-            </>
-          )}
-
-          {canManageTransfer(row) && row.toStore === store && row.status === 'approved' && (
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => handleAction(row.id!, 'complete')}
-              disabled={actionLoading === row.id}
-              className="p-1.5"
-              title="Mark as Completed"
-            >
-              {actionLoading === row.id ? (
-                <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white"></div>
-              ) : (
-                <CheckCircle size={14} />
-              )}
-            </Button>
-          )}
         </div>
       )
     }
@@ -628,7 +498,7 @@ const TransferRequestList: React.FC<TransferRequestListProps> = ({ store, view }
               </div>
               <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(selectedTransfer.status)}`}>
                 {getStatusIcon(selectedTransfer.status)}
-                {selectedTransfer.status.toUpperCase()}
+                {getStatusLabel(selectedTransfer.status)}
               </span>
             </div>
 
@@ -638,6 +508,12 @@ const TransferRequestList: React.FC<TransferRequestListProps> = ({ store, view }
                 <div>
                   <h4 className="font-medium text-gray-900 dark:text-white mb-2">Transfer Information</h4>
                   <div className="space-y-2 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-gray-600 dark:text-gray-400">Side Code:</span>
+                      <span className="font-mono font-bold text-amber-700 dark:text-amber-300">
+                        {selectedTransfer.itemSideCode || '—'}
+                      </span>
+                    </div>
                     <div className="flex justify-between">
                       <span className="text-gray-600 dark:text-gray-400">Item Type:</span>
                       <span className="font-medium">
@@ -783,11 +659,11 @@ const TransferRequestList: React.FC<TransferRequestListProps> = ({ store, view }
             {/* Action Buttons */}
             {canManageTransfer(selectedTransfer) && (
               <div className="flex justify-end gap-3 pt-4 border-t">
-                {selectedTransfer.fromStore === store && selectedTransfer.status === 'pending' && (
+                {selectedTransfer.fromStore === store && isOpenTransfer(selectedTransfer) && (
                   <>
                     <Button
                       variant="danger"
-                      onClick={() => handleAction(selectedTransfer.id!, 'reject')}
+                      onClick={() => handleReject(selectedTransfer)}
                       disabled={actionLoading === selectedTransfer.id}
                       className="flex items-center gap-2"
                     >
@@ -796,11 +672,11 @@ const TransferRequestList: React.FC<TransferRequestListProps> = ({ store, view }
                       ) : (
                         <X className="h-4 w-4" />
                       )}
-                      Reject Transfer
+                      Reject
                     </Button>
                     <Button
                       variant="success"
-                      onClick={() => handleAction(selectedTransfer.id!, 'approve')}
+                      onClick={() => handleConfirm(selectedTransfer)}
                       disabled={actionLoading === selectedTransfer.id}
                       className="flex items-center gap-2"
                     >
@@ -809,7 +685,7 @@ const TransferRequestList: React.FC<TransferRequestListProps> = ({ store, view }
                       ) : (
                         <Check className="h-4 w-4" />
                       )}
-                      Approve Transfer
+                      Confirm (ပစ္စည်းပို့မည်)
                     </Button>
                   </>
                 )}
@@ -817,7 +693,7 @@ const TransferRequestList: React.FC<TransferRequestListProps> = ({ store, view }
                 {selectedTransfer.toStore === store && selectedTransfer.status === 'approved' && (
                   <Button
                     variant="primary"
-                    onClick={() => handleAction(selectedTransfer.id!, 'complete')}
+                    onClick={() => handleConfirm(selectedTransfer)}
                     disabled={actionLoading === selectedTransfer.id}
                     className="flex items-center gap-2"
                   >
@@ -826,7 +702,7 @@ const TransferRequestList: React.FC<TransferRequestListProps> = ({ store, view }
                     ) : (
                       <CheckCircle className="h-4 w-4" />
                     )}
-                    Mark as Completed
+                    Receive (လက်ခံမည်)
                   </Button>
                 )}
               </div>

@@ -1,14 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { collection, getDocs, deleteDoc, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { VocItem } from '../type/voc';
+import { VocItem } from '../type/Voc';
 import { VOC } from '../type/Voc';
 import VocTable from '../components/voc/VocTable';
 import VocReturnModal from '../components/VocReturnModal';
 import VocManagement from '../components/voc/vocManagment';
 import { Store } from '../lib/utils';
 import { returnItemsToInventory, returnVOCItemsToInventory } from '../lib/InventoryCalculation';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/Tabs';
 import { ShoppingCart, List, Plus } from 'lucide-react';
 import toast from 'react-hot-toast';
 

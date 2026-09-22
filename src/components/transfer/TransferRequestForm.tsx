@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, query, where, getDocs, DocumentData } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
-import { TransferRequest } from '../../types/transfer';
+import { TransferRequest } from '../../type/transfer';
+import { normalizeItemCode, sideCodeOf } from '../../lib/transferInventory';
 import { useAuth } from '../../context/AuthContext';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
 import Select from '../ui/Select';
-import TextArea from '../ui/TextArea';
+import TextArea from '../ui/Textarea';
 import toast from 'react-hot-toast';
 import { Package, Search, AlertCircle } from 'lucide-react';
 
@@ -17,14 +18,62 @@ interface TransferRequestFormProps {
   isSubmitting: boolean;
 }
 
+interface ItemVariant {
+  label: string;
+  qty: number;
+}
+
 interface InventoryItem {
   id: string;
   code: string;
+  sideCode: string;
   name: string;
   qty: number;
   store: string;
   type: 'frames' | 'accessories' | 'contactLenses';
+  variants: ItemVariant[];
 }
+
+// Per-variant stock: C Numbers on Yangon office frames, colour counts on store frames.
+// Empty variants are left out so only what can actually be sent is listed.
+const variantsOf = (data: DocumentData): ItemVariant[] => {
+  const variants: ItemVariant[] = Array.isArray(data.cNumbers) && data.cNumbers.length > 0
+    ? data.cNumbers.map((c: DocumentData) => ({ label: String(c?.cNo ?? '').trim(), qty: Number(c?.qty) || 0 }))
+    : Object.entries(data.colors && typeof data.colors === 'object' ? data.colors : {})
+        .map(([color, qty]) => ({ label: color, qty: Number(qty) || 0 }));
+  return variants.filter(v => v.label && v.qty > 0);
+};
+
+// Adds two variant lists together, label by label
+const mergeVariants = (a: ItemVariant[], b: ItemVariant[]): ItemVariant[] => {
+  const merged = new Map<string, number>();
+  [...a, ...b].forEach(v => merged.set(v.label, (merged.get(v.label) || 0) + v.qty));
+  return [...merged].map(([label, qty]) => ({ label, qty }));
+};
+
+// Side code stands out in amber so staff can match it against the frame in hand
+const SideCodeBadge: React.FC<{ sideCode: string }> = ({ sideCode }) =>
+  sideCode ? (
+    <span className="inline-flex items-center px-2 py-0.5 rounded-md font-mono text-sm font-bold bg-amber-100 text-amber-900 dark:bg-amber-900/60 dark:text-amber-100">
+      {sideCode}
+    </span>
+  ) : (
+    <span className="text-gray-400">—</span>
+  );
+
+const VariantChips: React.FC<{ variants: ItemVariant[] }> = ({ variants }) =>
+  variants.length === 0 ? null : (
+    <div className="flex flex-wrap gap-1">
+      {variants.map(v => (
+        <span
+          key={v.label}
+          className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200"
+        >
+          {v.label}: {v.qty}
+        </span>
+      ))}
+    </div>
+  );
 
 const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
   onSubmit,
@@ -103,6 +152,9 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
     { value: 'Aye Nadi Htun', label: 'Aye Nadi Htun' }
   ];
 
+  // Identifies one model: the same name, code and side code
+  const itemKey = (item: InventoryItem) => `${item.code}\u0000${item.sideCode}\u0000${item.name}`;
+
   // Search for available items when store or item type changes
   useEffect(() => {
     if (formData.fromStore && formData.itemType) {
@@ -125,29 +177,35 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
       const snapshot = await getDocs(itemQuery);
       const items = snapshot.docs.map(doc => ({
         id: doc.id,
-        code: doc.data().code,
+        code: normalizeItemCode(doc.data().code),
+        sideCode: sideCodeOf(doc.data()),
         name: doc.data().name,
         qty: doc.data().qty,
         store: doc.data().store,
-        type: formData.itemType
+        type: formData.itemType,
+        variants: variantsOf(doc.data())
       })) as InventoryItem[];
 
-      // Group by NAME only (not code) to show exact matches
+      // One entry per model - same name, code and side code. Frames sharing a name but
+      // carrying a different code or side code are different models, so each gets its own row.
       const uniqueItems = items.reduce((acc, item) => {
-        const key = item.name; // Use only name as key
+        const key = itemKey(item);
         if (!acc[key]) {
           acc[key] = {
             ...item,
             qty: item.qty
           };
         } else {
-          // Sum quantities for same name items
+          // Same model stored twice - count it as one item
           acc[key].qty += item.qty;
+          acc[key].variants = mergeVariants(acc[key].variants, item.variants);
         }
         return acc;
       }, {} as Record<string, InventoryItem>);
 
-      setAvailableItems(Object.values(uniqueItems));
+      setAvailableItems(Object.values(uniqueItems).sort((a, b) =>
+        (a.name || '').localeCompare(b.name || '') || a.code.localeCompare(b.code) || a.sideCode.localeCompare(b.sideCode)
+      ));
     } catch (error) {
       console.error('Error searching items:', error);
       toast.error('Failed to search items');
@@ -156,9 +214,11 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
     }
   };
 
+  const search = searchTerm.toLowerCase();
   const filteredItems = availableItems.filter(item =>
-    item.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    item.name.toLowerCase().includes(searchTerm.toLowerCase())
+    item.code.toLowerCase().includes(search) ||
+    item.sideCode.toLowerCase().includes(search) ||
+    item.name.toLowerCase().includes(search)
   );
 
   const handleItemSelect = (item: InventoryItem) => {
@@ -184,13 +244,10 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
       return;
     }
 
-    // Check total available quantity by name (not code)
-    const totalQtyByName = availableItems
-      .filter(item => item.name === selectedItem.name)
-      .reduce((sum, item) => sum + item.qty, 0);
-
-    if (formData.requestedQuantity > totalQtyByName) {
-      setSubmitError(`Only ${totalQtyByName} available for "${selectedItem.name}" (Requested: ${formData.requestedQuantity})`);
+    // Stock of this exact code - other codes with the same name don't count
+    if (formData.requestedQuantity > selectedItem.qty) {
+      const ids = [selectedItem.code, selectedItem.sideCode && `Side ${selectedItem.sideCode}`].filter(Boolean).join(' · ');
+      setSubmitError(`Only ${selectedItem.qty} available for ${ids ? `${ids} - ` : ''}"${selectedItem.name}" (Requested: ${formData.requestedQuantity})`);
       return;
     }
 
@@ -199,11 +256,12 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
         itemType: formData.itemType,
         itemId: selectedItem.id,
         itemCode: selectedItem.code,
+        itemSideCode: selectedItem.sideCode,
         itemName: selectedItem.name,
         fromStore: formData.fromStore,
         toStore: currentStore,
         requestedQuantity: formData.requestedQuantity,
-        availableQuantity: totalQtyByName,
+        availableQuantity: selectedItem.qty,
         reason: formData.reason,
         urgency: formData.urgency,
         status: 'pending',
@@ -211,10 +269,12 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
         requestedAt: new Date(),
         receiverName: formData.receiverName,
         senderName: formData.senderName,
+        // Leave blank optional fields out - Firestore rejects `undefined`, which made
+        // every request without a phone or order number fail to submit
         customerInfo: {
           name: formData.customerName,
-          phone: formData.customerPhone || undefined,
-          orderNumber: formData.orderNumber || undefined
+          ...(formData.customerPhone && { phone: formData.customerPhone }),
+          ...(formData.orderNumber && { orderNumber: formData.orderNumber })
         }
       };
 
@@ -243,7 +303,7 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
         />
 
         <Select
-          label="From Store"
+          label="ဘယ်ဆိုင်ကယူမလဲ (From Store)"
           value={formData.fromStore}
           onChange={(e) => {
             setFormData(prev => ({ ...prev, fromStore: e.target.value }));
@@ -267,7 +327,7 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
               <Input
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Search by code or name..."
+                placeholder="Code / Side Code / Name နဲ့ရှာပါ..."
                 className="pl-10"
               />
             </div>
@@ -278,32 +338,45 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
               <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600"></div>
             </div>
           ) : (
-            <div className="max-h-48 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-lg">
+            <div className="max-h-80 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-lg">
               {filteredItems.length > 0 ? (
                 <div className="divide-y divide-gray-200 dark:divide-gray-700">
                   {filteredItems.map((item) => (
                     <div
-                      key={`${item.name}`} // Use name as key since we're grouping by name
+                      key={itemKey(item)}
                       onClick={() => handleItemSelect(item)}
                       className={`p-3 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors ${
-                        selectedItem?.name === item.name 
+                        selectedItem && itemKey(selectedItem) === itemKey(item)
                           ? 'bg-blue-50 dark:bg-blue-900/20 border-l-4 border-l-blue-500' 
                           : ''
                       }`}
                     >
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <p className="font-medium text-gray-900 dark:text-white">
-                            {item.code} - {item.name}
+                      <div className="flex justify-between items-start gap-3">
+                        <div className="min-w-0 space-y-1">
+                          <p className="text-sm flex flex-wrap items-center gap-x-4 gap-y-1">
+                            <span>
+                              <span className="text-gray-500 dark:text-gray-400">Code </span>
+                              <span className="font-mono font-semibold text-blue-700 dark:text-blue-300">{item.code || '—'}</span>
+                            </span>
+                            {(item.type === 'frames' || item.sideCode) && (
+                              <span>
+                                <span className="text-gray-500 dark:text-gray-400">Side Code </span>
+                                <SideCodeBadge sideCode={item.sideCode} />
+                              </span>
+                            )}
                           </p>
-                          <p className="text-sm text-gray-600 dark:text-gray-400">
+                          <p className="text-sm">
+                            <span className="text-gray-500 dark:text-gray-400">Name </span>
+                            <span className="font-medium text-gray-900 dark:text-white">{item.name}</span>
+                          </p>
+                          <VariantChips variants={item.variants} />
+                          <p className="text-xs text-gray-500 dark:text-gray-400">
                             {item.store.toUpperCase()} Store
                           </p>
                         </div>
-                        <div className="text-right">
-                          <p className="text-sm font-medium text-green-600 dark:text-green-400">
-                            {item.qty} available
-                          </p>
+                        <div className="text-right shrink-0">
+                          <p className="text-lg font-bold leading-none text-green-600 dark:text-green-400">{item.qty}</p>
+                          <p className="text-xs text-gray-500 dark:text-gray-400">available</p>
                         </div>
                       </div>
                     </div>
@@ -328,7 +401,10 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
           </div>
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div>
-              <p className="text-blue-700 dark:text-blue-300">Code: {selectedItem.code}</p>
+              <p className="text-blue-700 dark:text-blue-300">Code: <span className="font-mono font-semibold">{selectedItem.code || '—'}</span></p>
+              {(selectedItem.type === 'frames' || selectedItem.sideCode) && (
+                <p className="text-blue-700 dark:text-blue-300">Side Code: <SideCodeBadge sideCode={selectedItem.sideCode} /></p>
+              )}
               <p className="text-blue-700 dark:text-blue-300">Name: {selectedItem.name}</p>
             </div>
             <div>
@@ -336,6 +412,11 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
               <p className="text-blue-700 dark:text-blue-300">Store: {selectedItem.store.toUpperCase()}</p>
             </div>
           </div>
+          {selectedItem.variants.length > 0 && (
+            <div className="mt-2">
+              <VariantChips variants={selectedItem.variants} />
+            </div>
+          )}
         </div>
       )}
 
