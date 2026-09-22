@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
-import { TransferRequest } from '../../types/transfer';
+import { TransferRequest } from '../../type/transfer';
 import { useAuth } from '../../context/AuthContext';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
@@ -243,7 +243,7 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
         />
 
         <Select
-          label="From Store"
+          label="ဘယ်ဆိုင်ကယူမလဲ (From Store)"
           value={formData.fromStore}
           onChange={(e) => {
             setFormData(prev => ({ ...prev, fromStore: e.target.value }));

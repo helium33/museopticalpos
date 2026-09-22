@@ -22,6 +22,8 @@ export interface TransferRequest {
   rejectionReason?: string;
   completedBy?: string;
   completedAt?: any;
+  transferredQuantity?: number;
+  notes?: string;
   customerInfo?: {
     name: string;
     phone?: string;

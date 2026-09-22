@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
-import { TransferRequest } from '../../types/transfer';
+import { TransferRequest } from '../../type/transfer';
 import { useAuth } from '../../context/AuthContext';
 import { usePermissions } from '../../hooks/useSidebarItem';
 import Button from '../../components/ui/Button';
@@ -54,16 +54,16 @@ const TransferManagement: React.FC<TransferManagementProps> = ({ store }) => {
   const tabs = [
     {
       id: 'incoming' as const,
-      label: 'Incoming Requests',
+      label: 'Confirm လုပ်ရန်',
       icon: <Inbox className="h-4 w-4" />,
-      description: 'Requests from other stores to transfer items from this store',
+      description: 'တခြားဆိုင်တွေက ဒီဆိုင်ကနေ ယူချင်တဲ့ request တွေ။ Confirm နှိပ်လိုက်တာနဲ့ ဒီဆိုင် stock ကနေ နုတ်ပြီး ဟိုဆိုင် stock ထဲ ချက်ချင်းဝင်သွားမယ်။',
       count: 'pending-incoming'
     },
     {
       id: 'outgoing' as const,
-      label: 'Outgoing Requests',
+      label: 'ကိုယ်တောင်းထားတာ',
       icon: <Send className="h-4 w-4" />,
-      description: 'Requests made by this store to get items from other stores',
+      description: 'ဒီဆိုင်က တခြားဆိုင်ကနေ ယူဖို့ တောင်းထားတာတွေ။ ဟိုဆိုင်က Confirm နှိပ်တာနဲ့ ဒီဆိုင် stock ထဲ အလိုအလျောက် ဝင်လာမယ်။',
       count: 'pending-outgoing'
     },
     {
@@ -98,7 +98,7 @@ const TransferManagement: React.FC<TransferManagementProps> = ({ store }) => {
             className="flex items-center gap-2"
           >
             <Plus className="h-4 w-4" />
-            Request Transfer
+            တခြားဆိုင်ကယူမယ်
           </Button>
         )}
       </div>
@@ -120,10 +120,9 @@ const TransferManagement: React.FC<TransferManagementProps> = ({ store }) => {
           <div>
             <h4 className="font-medium text-amber-800 dark:text-amber-200 mb-2">Transfer Process</h4>
             <div className="text-sm text-amber-700 dark:text-amber-300 space-y-1">
-              <p><strong>1. Request:</strong> Submit transfer request for items from other stores</p>
-              <p><strong>2. Approval:</strong> Source store approves or rejects the request</p>
-              <p><strong>3. Completion:</strong> Destination store marks transfer as completed</p>
-              <p><strong>4. Quantity Update:</strong> System automatically updates quantities in both stores</p>
+              <p><strong>1. ယူမယ်:</strong> "တခြားဆိုင်ကယူမယ်" နှိပ်ပြီး ဘယ်ဆိုင်က ဘာပစ္စည်း ဘယ်နှခုယူမလဲ ရွေးပါ</p>
+              <p><strong>2. Confirm:</strong> ယူခံရတဲ့ဆိုင်က "Confirm လုပ်ရန်" tab မှာ Confirm နှိပ်ပါ (မပေးနိုင်ရင် Reject)</p>
+              <p><strong>3. ဝင်ပြီ:</strong> Confirm နှိပ်တာနဲ့ ဟိုဆိုင် stock ကနေ နုတ်ပြီး တောင်းတဲ့ဆိုင် stock ထဲ ချက်ချင်းဝင်ပါတယ် — Complete ထပ်နှိပ်စရာမလိုပါ</p>
             </div>
           </div>
         </div>
@@ -177,7 +176,7 @@ const TransferManagement: React.FC<TransferManagementProps> = ({ store }) => {
       <FormModal
         isOpen={requestFormOpen}
         onClose={() => setRequestFormOpen(false)}
-        title="Request Item Transfer"
+        title="တခြားဆိုင်ကနေ ယူမယ်"
         size="lg"
       >
         <TransferRequestForm
