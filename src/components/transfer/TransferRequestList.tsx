@@ -159,7 +159,7 @@ const TransferRequestList: React.FC<TransferRequestListProps> = ({ store, view }
     const from = transfer.fromStore.toUpperCase();
     const to = transfer.toStore.toUpperCase();
     const proceed = window.confirm(
-      `${transfer.itemName} × ${transfer.requestedQuantity}\n${from} → ${to}\n\n` +
+      `${transfer.itemCode ? `${transfer.itemCode} - ` : ''}${transfer.itemName} × ${transfer.requestedQuantity}\n${from} → ${to}\n\n` +
       `Confirm နှိပ်လိုက်တာနဲ့ ${from} stock ကနေ နုတ်ပြီး ${to} stock ထဲ ချက်ချင်းဝင်သွားပါမယ်။`
     );
     if (!proceed) return;
@@ -167,7 +167,7 @@ const TransferRequestList: React.FC<TransferRequestListProps> = ({ store, view }
     setActionLoading(transfer.id);
     try {
       await completeTransfer(transfer, user?.email || '');
-      toast.success(`${transfer.requestedQuantity} × "${transfer.itemName}" moved from ${from} to ${to}`);
+      toast.success(`${transfer.requestedQuantity} × ${transfer.itemCode ? `${transfer.itemCode} - ` : ''}"${transfer.itemName}" moved from ${from} to ${to}`);
       setDetailModalOpen(false);
     } catch (error) {
       console.error('Error confirming transfer:', error);
@@ -218,8 +218,14 @@ const TransferRequestList: React.FC<TransferRequestListProps> = ({ store, view }
       header: 'Item Name',
       sortable: true,
       render: (row: TransferRequest) => (
-        <div className="max-w-xs truncate font-medium text-blue-600 dark:text-blue-400" title={row.itemName}>
-          {row.itemName}
+        <div className="max-w-xs">
+          <div className="truncate font-medium text-blue-600 dark:text-blue-400" title={row.itemName}>
+            {row.itemName}
+          </div>
+          {/* Side code, so models sharing a name can be told apart at a glance */}
+          {row.itemCode && (
+            <div className="font-mono text-xs text-gray-600 dark:text-gray-400">{row.itemCode}</div>
+          )}
         </div>
       )
     },

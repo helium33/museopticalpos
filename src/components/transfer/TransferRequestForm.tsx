@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { TransferRequest } from '../../type/transfer';
+import { normalizeItemCode } from '../../lib/transferInventory';
 import { useAuth } from '../../context/AuthContext';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
@@ -103,6 +104,9 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
     { value: 'Aye Nadi Htun', label: 'Aye Nadi Htun' }
   ];
 
+  // Identifies one model: the same name with the same side code
+  const itemKey = (item: InventoryItem) => `${item.code}\u0000${item.name}`;
+
   // Search for available items when store or item type changes
   useEffect(() => {
     if (formData.fromStore && formData.itemType) {
@@ -125,29 +129,32 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
       const snapshot = await getDocs(itemQuery);
       const items = snapshot.docs.map(doc => ({
         id: doc.id,
-        code: doc.data().code,
+        code: normalizeItemCode(doc.data().code),
         name: doc.data().name,
         qty: doc.data().qty,
         store: doc.data().store,
         type: formData.itemType
       })) as InventoryItem[];
 
-      // Group by NAME only (not code) to show exact matches
+      // One entry per model - same name AND same side code. Frames sharing a name but
+      // carrying different codes are different models, so each code gets its own row.
       const uniqueItems = items.reduce((acc, item) => {
-        const key = item.name; // Use only name as key
+        const key = itemKey(item);
         if (!acc[key]) {
           acc[key] = {
             ...item,
             qty: item.qty
           };
         } else {
-          // Sum quantities for same name items
+          // Same code and name stored twice - count it as one item
           acc[key].qty += item.qty;
         }
         return acc;
       }, {} as Record<string, InventoryItem>);
 
-      setAvailableItems(Object.values(uniqueItems));
+      setAvailableItems(Object.values(uniqueItems).sort((a, b) =>
+        (a.name || '').localeCompare(b.name || '') || a.code.localeCompare(b.code)
+      ));
     } catch (error) {
       console.error('Error searching items:', error);
       toast.error('Failed to search items');
@@ -184,13 +191,9 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
       return;
     }
 
-    // Check total available quantity by name (not code)
-    const totalQtyByName = availableItems
-      .filter(item => item.name === selectedItem.name)
-      .reduce((sum, item) => sum + item.qty, 0);
-
-    if (formData.requestedQuantity > totalQtyByName) {
-      setSubmitError(`Only ${totalQtyByName} available for "${selectedItem.name}" (Requested: ${formData.requestedQuantity})`);
+    // Stock of this exact code - other codes with the same name don't count
+    if (formData.requestedQuantity > selectedItem.qty) {
+      setSubmitError(`Only ${selectedItem.qty} available for ${selectedItem.code ? `${selectedItem.code} - ` : ''}"${selectedItem.name}" (Requested: ${formData.requestedQuantity})`);
       return;
     }
 
@@ -203,7 +206,7 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
         fromStore: formData.fromStore,
         toStore: currentStore,
         requestedQuantity: formData.requestedQuantity,
-        availableQuantity: totalQtyByName,
+        availableQuantity: selectedItem.qty,
         reason: formData.reason,
         urgency: formData.urgency,
         status: 'pending',
@@ -269,7 +272,7 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
               <Input
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Search by code or name..."
+                placeholder="Code (side code) သို့မဟုတ် Name နဲ့ရှာပါ..."
                 className="pl-10"
               />
             </div>
@@ -285,10 +288,10 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
                 <div className="divide-y divide-gray-200 dark:divide-gray-700">
                   {filteredItems.map((item) => (
                     <div
-                      key={`${item.name}`} // Use name as key since we're grouping by name
+                      key={itemKey(item)}
                       onClick={() => handleItemSelect(item)}
                       className={`p-3 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors ${
-                        selectedItem?.name === item.name 
+                        selectedItem && itemKey(selectedItem) === itemKey(item)
                           ? 'bg-blue-50 dark:bg-blue-900/20 border-l-4 border-l-blue-500' 
                           : ''
                       }`}
@@ -296,7 +299,10 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
                       <div className="flex justify-between items-start">
                         <div>
                           <p className="font-medium text-gray-900 dark:text-white">
-                            {item.code} - {item.name}
+                            {item.code && (
+                              <span className="font-mono text-blue-700 dark:text-blue-300">{item.code} - </span>
+                            )}
+                            {item.name}
                           </p>
                           <p className="text-sm text-gray-600 dark:text-gray-400">
                             {item.store.toUpperCase()} Store

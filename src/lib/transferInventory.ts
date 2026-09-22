@@ -10,6 +10,10 @@ import { TransferRequest } from '../type/transfer';
 // approved under the old two-step flow, where the requester had to complete them.
 const OPEN_STATUSES = ['pending', 'approved'];
 
+// Frames can share a name but carry different side codes - each code is its own model.
+// Code is optional on some items, so a missing code counts as an empty one.
+export const normalizeItemCode = (code: unknown): string => String(code ?? '').trim();
+
 // Moves the requested quantity out of the source store and into the requesting store,
 // then marks the transfer completed. It all happens in one transaction, so stock is never
 // deducted without arriving, and a second Confirm click cannot move the items twice.
@@ -20,8 +24,9 @@ export const completeTransfer = async (transfer: TransferRequest, performedBy: s
 
   const collectionName = transfer.itemType;
 
-  // Transactions cannot run queries, so locate the documents first (matched by name,
-  // not code). Their quantities are read again inside the transaction before any write.
+  // Transactions cannot run queries, so locate the documents first. They are queried by
+  // name and then narrowed to the requested side code, so stock of another code with the
+  // same name is never touched. Quantities are read again inside the transaction.
   const [sourceSnapshot, destSnapshot] = await Promise.all([
     getDocs(query(
       collection(db, collectionName),
@@ -35,12 +40,18 @@ export const completeTransfer = async (transfer: TransferRequest, performedBy: s
     ))
   ]);
 
-  if (sourceSnapshot.empty) {
-    throw new Error(`"${transfer.itemName}" not found in ${transfer.fromStore.toUpperCase()} store`);
+  const itemCode = normalizeItemCode(transfer.itemCode);
+  const hasRequestedCode = (d: { data: () => DocumentData }) => normalizeItemCode(d.data().code) === itemCode;
+  const sourceDocs = sourceSnapshot.docs.filter(hasRequestedCode);
+  const destDoc = destSnapshot.docs.find(hasRequestedCode);
+  const label = itemCode ? `${itemCode} - "${transfer.itemName}"` : `"${transfer.itemName}"`;
+
+  if (sourceDocs.length === 0) {
+    throw new Error(`${label} not found in ${transfer.fromStore.toUpperCase()} store`);
   }
 
   const transferRef = doc(db, 'transfers', transfer.id);
-  const destRef = destSnapshot.empty ? null : destSnapshot.docs[0].ref;
+  const destRef = destDoc ? destDoc.ref : null;
 
   await runTransaction(db, async (tx) => {
     // Reads - Firestore requires every read to happen before the first write
@@ -50,7 +61,7 @@ export const completeTransfer = async (transfer: TransferRequest, performedBy: s
       throw new Error(`This transfer is already ${currentStatus || 'removed'}`);
     }
 
-    const sourceSnaps = await Promise.all(sourceSnapshot.docs.map(d => tx.get(d.ref)));
+    const sourceSnaps = await Promise.all(sourceDocs.map(d => tx.get(d.ref)));
     const destSnap = destRef ? await tx.get(destRef) : null;
 
     // Deduct from the largest stock first
@@ -62,7 +73,7 @@ export const completeTransfer = async (transfer: TransferRequest, performedBy: s
 
     const totalAvailable = sources.reduce((sum, source) => sum + source.qty, 0);
     if (totalAvailable < quantity) {
-      throw new Error(`Not enough "${transfer.itemName}" in ${transfer.fromStore.toUpperCase()} (Available: ${totalAvailable}, Requested: ${quantity})`);
+      throw new Error(`Not enough ${label} in ${transfer.fromStore.toUpperCase()} (Available: ${totalAvailable}, Requested: ${quantity})`);
     }
 
     // Writes - source store
@@ -87,7 +98,7 @@ export const completeTransfer = async (transfer: TransferRequest, performedBy: s
         performedBy,
         performedAt: serverTimestamp(),
         changes: [{ field: 'qty', oldValue: String(source.qty), newValue: String(newSourceQty) }],
-        notes: `Transferred ${deductFromThis} units to ${transfer.toStore.toUpperCase()} store (Transfer ID: ${transfer.id})`
+        notes: `Transferred ${deductFromThis} units of ${label} to ${transfer.toStore.toUpperCase()} store (Transfer ID: ${transfer.id})`
       });
 
       remainingToTransfer -= deductFromThis;
@@ -113,10 +124,10 @@ export const completeTransfer = async (transfer: TransferRequest, performedBy: s
         performedBy,
         performedAt: serverTimestamp(),
         changes: [{ field: 'qty', oldValue: String(destCurrentQty), newValue: String(newDestQty) }],
-        notes: `Received ${quantity} units from ${transfer.fromStore.toUpperCase()} store (Transfer ID: ${transfer.id})`
+        notes: `Received ${quantity} units of ${label} from ${transfer.fromStore.toUpperCase()} store (Transfer ID: ${transfer.id})`
       });
     } else {
-      // The requesting store has never stocked this item - create it from the source item
+      // The requesting store has never stocked this code - create it from the source item
       const newItem: DocumentData = {
         ...sources[0].data,
         qty: quantity,
@@ -141,7 +152,7 @@ export const completeTransfer = async (transfer: TransferRequest, performedBy: s
         performedBy,
         performedAt: serverTimestamp(),
         changes: [{ field: 'qty', oldValue: '0', newValue: String(quantity) }],
-        notes: `Created new item "${transfer.itemName}" with ${quantity} units from ${transfer.fromStore.toUpperCase()} store (Transfer ID: ${transfer.id})`
+        notes: `Created new item ${label} with ${quantity} units from ${transfer.fromStore.toUpperCase()} store (Transfer ID: ${transfer.id})`
       });
     }
 
