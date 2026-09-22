@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, query, where, getDocs, DocumentData } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { TransferRequest } from '../../type/transfer';
 import { normalizeItemCode } from '../../lib/transferInventory';
@@ -18,6 +18,11 @@ interface TransferRequestFormProps {
   isSubmitting: boolean;
 }
 
+interface ItemVariant {
+  label: string;
+  qty: number;
+}
+
 interface InventoryItem {
   id: string;
   code: string;
@@ -25,7 +30,39 @@ interface InventoryItem {
   qty: number;
   store: string;
   type: 'frames' | 'accessories' | 'contactLenses';
+  variants: ItemVariant[];
 }
+
+// Per-variant stock: C Numbers on Yangon office frames, colour counts on store frames.
+// Empty variants are left out so only what can actually be sent is listed.
+const variantsOf = (data: DocumentData): ItemVariant[] => {
+  const variants: ItemVariant[] = Array.isArray(data.cNumbers) && data.cNumbers.length > 0
+    ? data.cNumbers.map((c: DocumentData) => ({ label: String(c?.cNo ?? '').trim(), qty: Number(c?.qty) || 0 }))
+    : Object.entries(data.colors && typeof data.colors === 'object' ? data.colors : {})
+        .map(([color, qty]) => ({ label: color, qty: Number(qty) || 0 }));
+  return variants.filter(v => v.label && v.qty > 0);
+};
+
+// Adds two variant lists together, label by label
+const mergeVariants = (a: ItemVariant[], b: ItemVariant[]): ItemVariant[] => {
+  const merged = new Map<string, number>();
+  [...a, ...b].forEach(v => merged.set(v.label, (merged.get(v.label) || 0) + v.qty));
+  return [...merged].map(([label, qty]) => ({ label, qty }));
+};
+
+const VariantChips: React.FC<{ variants: ItemVariant[] }> = ({ variants }) =>
+  variants.length === 0 ? null : (
+    <div className="flex flex-wrap gap-1">
+      {variants.map(v => (
+        <span
+          key={v.label}
+          className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200"
+        >
+          {v.label}: {v.qty}
+        </span>
+      ))}
+    </div>
+  );
 
 const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
   onSubmit,
@@ -133,7 +170,8 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
         name: doc.data().name,
         qty: doc.data().qty,
         store: doc.data().store,
-        type: formData.itemType
+        type: formData.itemType,
+        variants: variantsOf(doc.data())
       })) as InventoryItem[];
 
       // One entry per model - same name AND same side code. Frames sharing a name but
@@ -148,6 +186,7 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
         } else {
           // Same code and name stored twice - count it as one item
           acc[key].qty += item.qty;
+          acc[key].variants = mergeVariants(acc[key].variants, item.variants);
         }
         return acc;
       }, {} as Record<string, InventoryItem>);
@@ -283,7 +322,7 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
               <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600"></div>
             </div>
           ) : (
-            <div className="max-h-48 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-lg">
+            <div className="max-h-80 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-lg">
               {filteredItems.length > 0 ? (
                 <div className="divide-y divide-gray-200 dark:divide-gray-700">
                   {filteredItems.map((item) => (
@@ -296,22 +335,24 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
                           : ''
                       }`}
                     >
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <p className="font-medium text-gray-900 dark:text-white">
-                            {item.code && (
-                              <span className="font-mono text-blue-700 dark:text-blue-300">{item.code} - </span>
-                            )}
-                            {item.name}
+                      <div className="flex justify-between items-start gap-3">
+                        <div className="min-w-0 space-y-1">
+                          <p className="text-sm">
+                            <span className="text-gray-500 dark:text-gray-400">Code </span>
+                            <span className="font-mono font-semibold text-blue-700 dark:text-blue-300">{item.code || '—'}</span>
                           </p>
-                          <p className="text-sm text-gray-600 dark:text-gray-400">
+                          <p className="text-sm">
+                            <span className="text-gray-500 dark:text-gray-400">Name </span>
+                            <span className="font-medium text-gray-900 dark:text-white">{item.name}</span>
+                          </p>
+                          <VariantChips variants={item.variants} />
+                          <p className="text-xs text-gray-500 dark:text-gray-400">
                             {item.store.toUpperCase()} Store
                           </p>
                         </div>
-                        <div className="text-right">
-                          <p className="text-sm font-medium text-green-600 dark:text-green-400">
-                            {item.qty} available
-                          </p>
+                        <div className="text-right shrink-0">
+                          <p className="text-lg font-bold leading-none text-green-600 dark:text-green-400">{item.qty}</p>
+                          <p className="text-xs text-gray-500 dark:text-gray-400">available</p>
                         </div>
                       </div>
                     </div>
@@ -336,7 +377,7 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
           </div>
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div>
-              <p className="text-blue-700 dark:text-blue-300">Code: {selectedItem.code}</p>
+              <p className="text-blue-700 dark:text-blue-300">Code: <span className="font-mono font-semibold">{selectedItem.code || '—'}</span></p>
               <p className="text-blue-700 dark:text-blue-300">Name: {selectedItem.name}</p>
             </div>
             <div>
@@ -344,6 +385,11 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
               <p className="text-blue-700 dark:text-blue-300">Store: {selectedItem.store.toUpperCase()}</p>
             </div>
           </div>
+          {selectedItem.variants.length > 0 && (
+            <div className="mt-2">
+              <VariantChips variants={selectedItem.variants} />
+            </div>
+          )}
         </div>
       )}
 
