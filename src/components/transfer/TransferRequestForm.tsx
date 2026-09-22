@@ -211,10 +211,12 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
         requestedAt: new Date(),
         receiverName: formData.receiverName,
         senderName: formData.senderName,
+        // Leave blank optional fields out - Firestore rejects `undefined`, which made
+        // every request without a phone or order number fail to submit
         customerInfo: {
           name: formData.customerName,
-          phone: formData.customerPhone || undefined,
-          orderNumber: formData.orderNumber || undefined
+          ...(formData.customerPhone && { phone: formData.customerPhone }),
+          ...(formData.orderNumber && { orderNumber: formData.orderNumber })
         }
       };
 
