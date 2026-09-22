@@ -3,6 +3,9 @@ export interface TransferRequest {
   itemType: 'frames' | 'accessories' | 'contactLenses';
   itemId: string;
   itemCode: string;
+  // Side code of the requested model ('' when the item has none). Missing on requests
+  // made before side codes were recorded, which are matched by code and name alone.
+  itemSideCode?: string;
   itemName: string;
   fromStore: string;
   toStore: string;

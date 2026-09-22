@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { collection, query, where, getDocs, DocumentData } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { TransferRequest } from '../../type/transfer';
-import { normalizeItemCode } from '../../lib/transferInventory';
+import { normalizeItemCode, sideCodeOf } from '../../lib/transferInventory';
 import { useAuth } from '../../context/AuthContext';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
@@ -26,6 +26,7 @@ interface ItemVariant {
 interface InventoryItem {
   id: string;
   code: string;
+  sideCode: string;
   name: string;
   qty: number;
   store: string;
@@ -49,6 +50,16 @@ const mergeVariants = (a: ItemVariant[], b: ItemVariant[]): ItemVariant[] => {
   [...a, ...b].forEach(v => merged.set(v.label, (merged.get(v.label) || 0) + v.qty));
   return [...merged].map(([label, qty]) => ({ label, qty }));
 };
+
+// Side code stands out in amber so staff can match it against the frame in hand
+const SideCodeBadge: React.FC<{ sideCode: string }> = ({ sideCode }) =>
+  sideCode ? (
+    <span className="inline-flex items-center px-2 py-0.5 rounded-md font-mono text-sm font-bold bg-amber-100 text-amber-900 dark:bg-amber-900/60 dark:text-amber-100">
+      {sideCode}
+    </span>
+  ) : (
+    <span className="text-gray-400">—</span>
+  );
 
 const VariantChips: React.FC<{ variants: ItemVariant[] }> = ({ variants }) =>
   variants.length === 0 ? null : (
@@ -141,8 +152,8 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
     { value: 'Aye Nadi Htun', label: 'Aye Nadi Htun' }
   ];
 
-  // Identifies one model: the same name with the same side code
-  const itemKey = (item: InventoryItem) => `${item.code}\u0000${item.name}`;
+  // Identifies one model: the same name, code and side code
+  const itemKey = (item: InventoryItem) => `${item.code}\u0000${item.sideCode}\u0000${item.name}`;
 
   // Search for available items when store or item type changes
   useEffect(() => {
@@ -167,6 +178,7 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
       const items = snapshot.docs.map(doc => ({
         id: doc.id,
         code: normalizeItemCode(doc.data().code),
+        sideCode: sideCodeOf(doc.data()),
         name: doc.data().name,
         qty: doc.data().qty,
         store: doc.data().store,
@@ -174,8 +186,8 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
         variants: variantsOf(doc.data())
       })) as InventoryItem[];
 
-      // One entry per model - same name AND same side code. Frames sharing a name but
-      // carrying different codes are different models, so each code gets its own row.
+      // One entry per model - same name, code and side code. Frames sharing a name but
+      // carrying a different code or side code are different models, so each gets its own row.
       const uniqueItems = items.reduce((acc, item) => {
         const key = itemKey(item);
         if (!acc[key]) {
@@ -184,7 +196,7 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
             qty: item.qty
           };
         } else {
-          // Same code and name stored twice - count it as one item
+          // Same model stored twice - count it as one item
           acc[key].qty += item.qty;
           acc[key].variants = mergeVariants(acc[key].variants, item.variants);
         }
@@ -192,7 +204,7 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
       }, {} as Record<string, InventoryItem>);
 
       setAvailableItems(Object.values(uniqueItems).sort((a, b) =>
-        (a.name || '').localeCompare(b.name || '') || a.code.localeCompare(b.code)
+        (a.name || '').localeCompare(b.name || '') || a.code.localeCompare(b.code) || a.sideCode.localeCompare(b.sideCode)
       ));
     } catch (error) {
       console.error('Error searching items:', error);
@@ -202,9 +214,11 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
     }
   };
 
+  const search = searchTerm.toLowerCase();
   const filteredItems = availableItems.filter(item =>
-    item.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    item.name.toLowerCase().includes(searchTerm.toLowerCase())
+    item.code.toLowerCase().includes(search) ||
+    item.sideCode.toLowerCase().includes(search) ||
+    item.name.toLowerCase().includes(search)
   );
 
   const handleItemSelect = (item: InventoryItem) => {
@@ -232,7 +246,8 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
 
     // Stock of this exact code - other codes with the same name don't count
     if (formData.requestedQuantity > selectedItem.qty) {
-      setSubmitError(`Only ${selectedItem.qty} available for ${selectedItem.code ? `${selectedItem.code} - ` : ''}"${selectedItem.name}" (Requested: ${formData.requestedQuantity})`);
+      const ids = [selectedItem.code, selectedItem.sideCode && `Side ${selectedItem.sideCode}`].filter(Boolean).join(' · ');
+      setSubmitError(`Only ${selectedItem.qty} available for ${ids ? `${ids} - ` : ''}"${selectedItem.name}" (Requested: ${formData.requestedQuantity})`);
       return;
     }
 
@@ -241,6 +256,7 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
         itemType: formData.itemType,
         itemId: selectedItem.id,
         itemCode: selectedItem.code,
+        itemSideCode: selectedItem.sideCode,
         itemName: selectedItem.name,
         fromStore: formData.fromStore,
         toStore: currentStore,
@@ -311,7 +327,7 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
               <Input
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Code (side code) သို့မဟုတ် Name နဲ့ရှာပါ..."
+                placeholder="Code / Side Code / Name နဲ့ရှာပါ..."
                 className="pl-10"
               />
             </div>
@@ -337,9 +353,17 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
                     >
                       <div className="flex justify-between items-start gap-3">
                         <div className="min-w-0 space-y-1">
-                          <p className="text-sm">
-                            <span className="text-gray-500 dark:text-gray-400">Code </span>
-                            <span className="font-mono font-semibold text-blue-700 dark:text-blue-300">{item.code || '—'}</span>
+                          <p className="text-sm flex flex-wrap items-center gap-x-4 gap-y-1">
+                            <span>
+                              <span className="text-gray-500 dark:text-gray-400">Code </span>
+                              <span className="font-mono font-semibold text-blue-700 dark:text-blue-300">{item.code || '—'}</span>
+                            </span>
+                            {(item.type === 'frames' || item.sideCode) && (
+                              <span>
+                                <span className="text-gray-500 dark:text-gray-400">Side Code </span>
+                                <SideCodeBadge sideCode={item.sideCode} />
+                              </span>
+                            )}
                           </p>
                           <p className="text-sm">
                             <span className="text-gray-500 dark:text-gray-400">Name </span>
@@ -378,6 +402,9 @@ const TransferRequestForm: React.FC<TransferRequestFormProps> = ({
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div>
               <p className="text-blue-700 dark:text-blue-300">Code: <span className="font-mono font-semibold">{selectedItem.code || '—'}</span></p>
+              {(selectedItem.type === 'frames' || selectedItem.sideCode) && (
+                <p className="text-blue-700 dark:text-blue-300">Side Code: <SideCodeBadge sideCode={selectedItem.sideCode} /></p>
+              )}
               <p className="text-blue-700 dark:text-blue-300">Name: {selectedItem.name}</p>
             </div>
             <div>

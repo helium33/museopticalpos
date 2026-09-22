@@ -146,6 +146,12 @@ const TransferRequestList: React.FC<TransferRequestListProps> = ({ store, view }
 
   // Nothing has moved yet in either state, so both can still be confirmed or rejected.
   // 'approved' only exists on requests approved under the old two-step flow.
+  // e.g. "RB5228 2012 · Side 92031 - RayBan 5228"
+  const describeItem = (transfer: TransferRequest) => {
+    const ids = [transfer.itemCode, transfer.itemSideCode && `Side ${transfer.itemSideCode}`].filter(Boolean).join(' · ');
+    return ids ? `${ids} - ${transfer.itemName}` : transfer.itemName;
+  };
+
   const isOpenTransfer = (transfer: TransferRequest) =>
     transfer.status === 'pending' || transfer.status === 'approved';
 
@@ -159,7 +165,7 @@ const TransferRequestList: React.FC<TransferRequestListProps> = ({ store, view }
     const from = transfer.fromStore.toUpperCase();
     const to = transfer.toStore.toUpperCase();
     const proceed = window.confirm(
-      `${transfer.itemCode ? `${transfer.itemCode} - ` : ''}${transfer.itemName} × ${transfer.requestedQuantity}\n${from} → ${to}\n\n` +
+      `${describeItem(transfer)} × ${transfer.requestedQuantity}\n${from} → ${to}\n\n` +
       `Confirm နှိပ်လိုက်တာနဲ့ ${from} stock ကနေ နုတ်ပြီး ${to} stock ထဲ ချက်ချင်းဝင်သွားပါမယ်။`
     );
     if (!proceed) return;
@@ -167,7 +173,7 @@ const TransferRequestList: React.FC<TransferRequestListProps> = ({ store, view }
     setActionLoading(transfer.id);
     try {
       await completeTransfer(transfer, user?.email || '');
-      toast.success(`${transfer.requestedQuantity} × ${transfer.itemCode ? `${transfer.itemCode} - ` : ''}"${transfer.itemName}" moved from ${from} to ${to}`);
+      toast.success(`${transfer.requestedQuantity} × ${describeItem(transfer)} moved from ${from} to ${to}`);
       setDetailModalOpen(false);
     } catch (error) {
       console.error('Error confirming transfer:', error);
@@ -222,11 +228,23 @@ const TransferRequestList: React.FC<TransferRequestListProps> = ({ store, view }
           <div className="truncate font-medium text-blue-600 dark:text-blue-400" title={row.itemName}>
             {row.itemName}
           </div>
-          {/* Side code, so models sharing a name can be told apart at a glance */}
+          {/* Item code, so models sharing a name can be told apart at a glance */}
           {row.itemCode && (
             <div className="font-mono text-xs text-gray-600 dark:text-gray-400">{row.itemCode}</div>
           )}
         </div>
+      )
+    },
+    {
+      key: 'itemSideCode',
+      header: 'Side Code',
+      sortable: true,
+      render: (row: TransferRequest) => row.itemSideCode ? (
+        <span className="inline-flex items-center px-2 py-0.5 rounded-md font-mono text-sm font-bold bg-amber-100 text-amber-900 dark:bg-amber-900/60 dark:text-amber-100">
+          {row.itemSideCode}
+        </span>
+      ) : (
+        <span className="text-gray-400">—</span>
       )
     },
     {
@@ -490,6 +508,12 @@ const TransferRequestList: React.FC<TransferRequestListProps> = ({ store, view }
                 <div>
                   <h4 className="font-medium text-gray-900 dark:text-white mb-2">Transfer Information</h4>
                   <div className="space-y-2 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-gray-600 dark:text-gray-400">Side Code:</span>
+                      <span className="font-mono font-bold text-amber-700 dark:text-amber-300">
+                        {selectedTransfer.itemSideCode || '—'}
+                      </span>
+                    </div>
                     <div className="flex justify-between">
                       <span className="text-gray-600 dark:text-gray-400">Item Type:</span>
                       <span className="font-medium">

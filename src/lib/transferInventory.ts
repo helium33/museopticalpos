@@ -10,9 +10,28 @@ import { TransferRequest } from '../type/transfer';
 // approved under the old two-step flow, where the requester had to complete them.
 const OPEN_STATUSES = ['pending', 'approved'];
 
-// Frames can share a name but carry different side codes - each code is its own model.
-// Code is optional on some items, so a missing code counts as an empty one.
+// Frames can share a name but carry different codes - each code is its own model.
+// Codes are optional on some items, so a missing one counts as empty; values compare trimmed.
 export const normalizeItemCode = (code: unknown): string => String(code ?? '').trim();
+
+// The side code (model number on the frame's temple, e.g. 92031) is saved by the frame
+// screens, but its field name isn't fixed across versions of the app - accept the usual
+// spellings: sideCode, side_code, sidecode, SideCode, "Side Code", side-code.
+const SIDE_CODE_FIELD = /^side[\s_-]?code$/i;
+
+const sideCodeFieldOf = (data: DocumentData | undefined): string | undefined =>
+  data ? Object.keys(data).find(field => SIDE_CODE_FIELD.test(field)) : undefined;
+
+export const sideCodeOf = (data: DocumentData | undefined): string => {
+  const field = sideCodeFieldOf(data);
+  return field && data ? normalizeItemCode(data[field]) : '';
+};
+
+// e.g. RB5228 2012 · Side 92031 - "RayBan 5228", for errors and stock history
+const describeItem = (code: string, sideCode: string | undefined, name: string): string => {
+  const ids = [code, sideCode ? `Side ${sideCode}` : ''].filter(Boolean).join(' · ');
+  return ids ? `${ids} - "${name}"` : `"${name}"`;
+};
 
 // Moves the requested quantity out of the source store and into the requesting store,
 // then marks the transfer completed. It all happens in one transaction, so stock is never
@@ -25,8 +44,8 @@ export const completeTransfer = async (transfer: TransferRequest, performedBy: s
   const collectionName = transfer.itemType;
 
   // Transactions cannot run queries, so locate the documents first. They are queried by
-  // name and then narrowed to the requested side code, so stock of another code with the
-  // same name is never touched. Quantities are read again inside the transaction.
+  // name and then narrowed to the requested code and side code, so stock of another model
+  // with the same name is never touched. Quantities are read again inside the transaction.
   const [sourceSnapshot, destSnapshot] = await Promise.all([
     getDocs(query(
       collection(db, collectionName),
@@ -41,10 +60,23 @@ export const completeTransfer = async (transfer: TransferRequest, performedBy: s
   ]);
 
   const itemCode = normalizeItemCode(transfer.itemCode);
+  const itemSideCode = transfer.itemSideCode === undefined ? undefined : normalizeItemCode(transfer.itemSideCode);
   const hasRequestedCode = (d: { data: () => DocumentData }) => normalizeItemCode(d.data().code) === itemCode;
-  const sourceDocs = sourceSnapshot.docs.filter(hasRequestedCode);
-  const destDoc = destSnapshot.docs.find(hasRequestedCode);
-  const label = itemCode ? `${itemCode} - "${transfer.itemName}"` : `"${transfer.itemName}"`;
+  const label = describeItem(itemCode, itemSideCode, transfer.itemName);
+
+  // Only the requested model leaves the source store - same code and, when the request
+  // records one, the same side code
+  const sourceDocs = sourceSnapshot.docs.filter(d =>
+    hasRequestedCode(d) && (itemSideCode === undefined || sideCodeOf(d.data()) === itemSideCode)
+  );
+
+  // At the requesting store, add to the same model: the exact side code first, else an item
+  // with this code but no side code recorded yet (it gets the side code filled in).
+  // Only when every item with this code carries a different side code is a new one created.
+  const destCandidates = destSnapshot.docs.filter(hasRequestedCode);
+  const destDoc = itemSideCode
+    ? destCandidates.find(d => sideCodeOf(d.data()) === itemSideCode) ?? destCandidates.find(d => !sideCodeOf(d.data()))
+    : destCandidates[0];
 
   if (sourceDocs.length === 0) {
     throw new Error(`${label} not found in ${transfer.fromStore.toUpperCase()} store`);
@@ -110,10 +142,14 @@ export const completeTransfer = async (transfer: TransferRequest, performedBy: s
       const destCurrentQty = Number(destData.qty) || 0;
       const newDestQty = destCurrentQty + quantity;
 
+      // Record the side code on an item that didn't have one, under the source's field name
+      const sourceSideField = itemSideCode && !sideCodeOf(destData) ? sideCodeFieldOf(sources[0].data) : undefined;
+
       tx.update(destRef, {
         qty: newDestQty,
         totalQty: (destData.totalQty || destCurrentQty) + quantity,
         transferInQty: (destData.transferInQty || 0) + quantity,
+        ...(sourceSideField && { [sourceSideField]: sources[0].data[sourceSideField] }),
         updatedAt: serverTimestamp()
       });
       tx.set(doc(collection(db, 'itemHistory')), {
@@ -127,7 +163,8 @@ export const completeTransfer = async (transfer: TransferRequest, performedBy: s
         notes: `Received ${quantity} units of ${label} from ${transfer.fromStore.toUpperCase()} store (Transfer ID: ${transfer.id})`
       });
     } else {
-      // The requesting store has never stocked this code - create it from the source item
+      // The requesting store has never stocked this model - create it from the source item,
+      // which carries its code, side code and other details across
       const newItem: DocumentData = {
         ...sources[0].data,
         qty: quantity,
